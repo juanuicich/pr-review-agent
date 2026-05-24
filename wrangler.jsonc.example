@@ -6,7 +6,10 @@
   "containers": [
     {
       "class_name": "Sandbox",
-      "image": "./Dockerfile"
+      "image": "./Dockerfile",
+      "memory": "4096",
+      "vcpu": "2",
+      "disk": "4000"
     }
   ],
   "durable_objects": {
