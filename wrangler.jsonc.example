@@ -7,9 +7,7 @@
     {
       "class_name": "Sandbox",
       "image": "./Dockerfile",
-      "memory": "4096",
-      "vcpu": "2",
-      "disk": "4000"
+      "instance_type": { "vcpu": 2, "memory_mib": 6144, "disk_mb": 4000 }
     }
   ],
   "durable_objects": {
@@ -40,6 +38,9 @@
       "bucket_name": "TODO_CREATE_R2_BUCKET"
     }
   ],
+  "observability": {
+    "enabled": true
+  },
   "rules": [
     { "type": "Text", "globs": ["**/*.md"], "fallthrough": true },
     { "type": "Text", "globs": ["**/*.sh"] }
