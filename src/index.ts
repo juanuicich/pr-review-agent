@@ -151,11 +151,12 @@ async function handleReview(request: Request, env: Env): Promise<Response> {
   const existingBackup = await env.KV.get(backupKey);
   if (existingBackup) {
     const backupHandle = JSON.parse(existingBackup);
+    backupHandle.localBucket = true;
     await sandbox.restoreBackup(backupHandle);
   } else if (setupScript) {
     await sandbox.writeFile("/workspace/setup.sh", setupScript);
     await sandbox.exec("bash /workspace/setup.sh");
-    const backup = await sandbox.createBackup({ dir: "/workspace" });
+    const backup = await sandbox.createBackup({ dir: "/workspace", localBucket: true });
     await env.KV.put(backupKey, JSON.stringify(backup));
   }
 
