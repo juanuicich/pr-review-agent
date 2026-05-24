@@ -1,4 +1,4 @@
-FROM docker.io/cloudflare/sandbox:latest
+FROM docker.io/cloudflare/sandbox:0.10.2
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git curl ca-certificates build-essential jq sudo ripgrep \
