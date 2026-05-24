@@ -38,6 +38,26 @@ GitHub Action  ──POST /review──▶  Cloudflare Worker
 - Cloudflare Workers Paid plan ($5/month) -- required for Sandbox SDK
 - Node.js 18+
 
+### Configuration
+
+Copy the wrangler template and fill in the resource IDs:
+
+```sh
+cp wrangler.jsonc.example wrangler.jsonc
+```
+
+Create a KV namespace and update the `id` in `wrangler.jsonc`:
+
+```sh
+wrangler kv namespace create KV
+```
+
+Create the backup bucket and update `bucket_name` in `wrangler.jsonc`:
+
+```sh
+wrangler r2 bucket create <your-bucket-name>
+```
+
 ### Secrets
 
 Set via `wrangler secret put`:
@@ -52,26 +72,6 @@ OPENCODE_MODEL         # Model in provider/model format (e.g. deepseek/deepseek-
 REVIEW_WORKER_URL      # Deployed worker URL (e.g. https://pr-review-agent.<account>.workers.dev)
 R2_ACCESS_KEY_ID       # R2 API token for backup presigned URLs
 R2_SECRET_ACCESS_KEY   # R2 API token for backup presigned URLs
-```
-
-### Model Selection
-
-The `OPENCODE_MODEL` secret selects the model using opencode's `provider/model` format (e.g. `deepseek/deepseek-v4-pro`, `anthropic/claude-sonnet-4-6`, `openai/gpt-5.5`). Make sure `LLM_API_KEY` matches the selected provider.
-
-### KV Namespace
-
-Create a KV namespace and update the ID in `wrangler.jsonc`:
-
-```sh
-wrangler kv namespace create KV
-```
-
-### R2 Bucket
-
-Create the backup bucket and update the name in `wrangler.jsonc`:
-
-```sh
-wrangler r2 bucket create <your-bucket-name>
 ```
 
 ## Deploy
