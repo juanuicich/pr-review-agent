@@ -78,7 +78,7 @@ Paste the returned KV namespace ID and your chosen bucket name into the GitHub r
 | `LLM_API_KEY` | Your LLM provider's dashboard (e.g. Anthropic, OpenAI, DeepSeek) |
 | `OPENCODE_MODEL` | Not a secret -- set via `wrangler secret put` or as a Worker var. Format: `provider/model` (e.g. `anthropic/claude-sonnet-4-6`) |
 | `REVIEW_WORKER_URL` | Set after first deploy (e.g. `https://pr-review-agent.<account>.workers.dev`) |
-| `R2_ACCESS_KEY_ID` | [Cloudflare Dashboard > R2 > Manage R2 API Tokens > Create API Token](https://dash.cloudflare.com/?to=/:account/r2/security-tokens) |
+| `R2_ACCESS_KEY_ID` | [Cloudflare Dashboard > R2 > Manage R2 API Tokens](https://dash.cloudflare.com/?to=/:account/r2/api-tokens) -- create a token with "Object Read & Write" permission for the backup bucket |
 | `R2_SECRET_ACCESS_KEY` | Created alongside the R2 access key above |
 
 ## Deploy
