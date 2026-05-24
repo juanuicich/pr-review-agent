@@ -78,8 +78,6 @@ Paste the returned KV namespace ID and your chosen bucket name into the GitHub r
 | `LLM_API_KEY` | Your LLM provider's dashboard (e.g. Anthropic, OpenAI, DeepSeek) |
 | `OPENCODE_MODEL` | Not a secret -- set via `wrangler secret put` or as a Worker var. Format: `provider/model` (e.g. `anthropic/claude-sonnet-4-6`) |
 | `REVIEW_WORKER_URL` | Set after first deploy (e.g. `https://pr-review-agent.<account>.workers.dev`) |
-| `R2_ACCESS_KEY_ID` | [Cloudflare Dashboard > R2 > Manage R2 API Tokens](https://dash.cloudflare.com/?to=/:account/r2/api-tokens) -- create a token with "Object Read & Write" permission for the backup bucket |
-| `R2_SECRET_ACCESS_KEY` | Created alongside the R2 access key above |
 
 ## Deploy
 
@@ -97,14 +95,6 @@ Pushes to `main` auto-deploy via GitHub Actions. Set these in the repo's GitHub 
 | Secret | Description |
 |---|---|
 | `CLOUDFLARE_API_TOKEN` | Cloudflare API token with Workers edit permissions |
-| `AUTH_TOKEN` | Shared secret for worker auth (set via `wrangler secret put`) |
-| `GH_TOKEN` | GitHub PAT with repo access |
-| `LINEAR_API_KEY` | Linear API key |
-| `LLM_API_KEY` | API key for the selected LLM provider |
-| `OPENCODE_MODEL` | Model in `provider/model` format |
-| `REVIEW_WORKER_URL` | Deployed worker URL (set after first deploy) |
-| `R2_ACCESS_KEY_ID` | R2 API token for presigned URLs |
-| `R2_SECRET_ACCESS_KEY` | R2 API token for presigned URLs |
 
 The CI workflow copies `wrangler.jsonc.example`, replaces the placeholders with the repo variables, and runs `wrangler deploy`.
 

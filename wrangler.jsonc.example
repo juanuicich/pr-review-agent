@@ -51,7 +51,5 @@
   // - LLM_API_KEY (API key for the selected model provider)
   // - OPENCODE_MODEL (provider/model format, e.g. anthropic/claude-sonnet-4-6)
   // - REVIEW_WORKER_URL (deployed worker URL, e.g. https://pr-review-agent.<account>.workers.dev)
-  // - R2_ACCESS_KEY_ID (R2 API token for presigned URLs)
-  // - R2_SECRET_ACCESS_KEY (R2 API token for presigned URLs)
   "vars": {}
 }
