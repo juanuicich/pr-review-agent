@@ -76,12 +76,41 @@ R2_SECRET_ACCESS_KEY   # R2 API token for backup presigned URLs
 
 ## Deploy
 
+Pushes to `main` auto-deploy via GitHub Actions. Set these in the repo's GitHub settings:
+
+**Repository variables** (Settings > Variables and secrets > Actions > Variables):
+
+| Variable | Description |
+|---|---|
+| `CF_KV_NAMESPACE_ID` | KV namespace ID from `wrangler kv namespace create KV` |
+| `CF_R2_BUCKET_NAME` | R2 bucket name from `wrangler r2 bucket create <name>` |
+
+**Repository secrets** (Settings > Variables and secrets > Actions > Secrets):
+
+| Secret | Description |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | Cloudflare API token with Workers edit permissions |
+| `AUTH_TOKEN` | Shared secret for worker auth (set via `wrangler secret put`) |
+| `GH_TOKEN` | GitHub PAT with repo access |
+| `LINEAR_API_KEY` | Linear API key |
+| `LLM_API_KEY` | API key for the selected LLM provider |
+| `OPENCODE_MODEL` | Model in `provider/model` format |
+| `REVIEW_WORKER_URL` | Deployed worker URL (set after first deploy) |
+| `R2_ACCESS_KEY_ID` | R2 API token for presigned URLs |
+| `R2_SECRET_ACCESS_KEY` | R2 API token for presigned URLs |
+
+The CI workflow copies `wrangler.jsonc.example`, replaces the placeholders with the repo variables, and runs `wrangler deploy`.
+
+### Manual deploy
+
 ```sh
+cp wrangler.jsonc.example wrangler.jsonc
+# fill in KV namespace ID and R2 bucket name
 npm install
 wrangler deploy
 ```
 
-After the first deploy, set `REVIEW_WORKER_URL` to the deployed worker URL:
+After the first deploy, set `REVIEW_WORKER_URL`:
 
 ```sh
 wrangler secret put REVIEW_WORKER_URL
