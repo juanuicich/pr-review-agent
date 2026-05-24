@@ -8,6 +8,7 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -24,7 +25,10 @@ jobs:
             -e "s/TODO_CREATE_R2_BUCKET/${{ vars.CF_R2_BUCKET_NAME }}/" \
             wrangler.jsonc.example > wrangler.jsonc
 
-      - name: Deploy
-        run: npx wrangler deploy
+      - name: Deploy (with retry)
+        run: |
+          for i in 1 2 3; do
+            npx wrangler deploy && break || sleep 30
+          done
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
