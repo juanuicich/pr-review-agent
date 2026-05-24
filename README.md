@@ -46,17 +46,19 @@ Copy the wrangler template and fill in the resource IDs:
 cp wrangler.jsonc.example wrangler.jsonc
 ```
 
-Create a KV namespace and update the `id` in `wrangler.jsonc`:
+Create a KV namespace (name is account-scoped, pick anything):
 
 ```sh
-wrangler kv namespace create KV
+wrangler kv namespace create pr-review-agent-kv
 ```
 
-Create the backup bucket and update `bucket_name` in `wrangler.jsonc`:
+Create an R2 bucket (name must be globally unique across all Cloudflare accounts):
 
 ```sh
-wrangler r2 bucket create <your-bucket-name>
+wrangler r2 bucket create <your-unique-bucket-name>
 ```
+
+Paste the returned KV namespace ID and your chosen bucket name into the GitHub repo variables `CF_KV_NAMESPACE_ID` and `CF_R2_BUCKET_NAME`. The CI workflow injects them into the config at deploy time.
 
 ### Secrets
 
