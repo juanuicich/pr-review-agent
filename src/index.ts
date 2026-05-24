@@ -188,6 +188,36 @@ async function handleReview(request: Request, env: Env): Promise<Response> {
   });
 }
 
+async function handleLogs(request: Request, env: Env): Promise<Response> {
+  if (!validateAuth(request, env.AUTH_TOKEN)) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const url = new URL(request.url);
+  const owner = url.searchParams.get("owner");
+  const repo = url.searchParams.get("repo");
+  const prNumber = url.searchParams.get("pr_number");
+
+  if (!owner || !repo || !prNumber) {
+    return new Response(
+      JSON.stringify({ error: "Missing required fields" }),
+      { status: 400, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  const output = await request.text();
+  const logKey = `logs:${owner}:${repo}:${prNumber}`;
+  await env.KV.put(logKey, output);
+
+  const tail = output.length > 4000 ? `\n...truncated...\n${output.slice(-4000)}` : output;
+  console.log(`[${owner}/${repo}#${prNumber}] Review output:\n${tail}`);
+
+  return new Response(JSON.stringify({ status: "ok" }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 async function handleCleanup(request: Request, env: Env): Promise<Response> {
   if (!validateAuth(request, env.AUTH_TOKEN)) {
     return new Response("Unauthorized", { status: 401 });
@@ -227,11 +257,11 @@ async function handleCleanup(request: Request, env: Env): Promise<Response> {
 }
 
 async function handleScheduled(event: ScheduledEvent, env: Env): Promise<void> {
-  const list = await env.KV.list({ prefix: "pr:" });
   const now = Date.now();
   const timeoutMs = 30 * 60 * 1000;
 
-  for (const key of list.keys) {
+  const reviews = await env.KV.list({ prefix: "pr:" });
+  for (const key of reviews.keys) {
     const raw = await env.KV.get(key.name);
     if (!raw) continue;
 
@@ -245,6 +275,12 @@ async function handleScheduled(event: ScheduledEvent, env: Env): Promise<void> {
     } catch {
       await env.KV.delete(key.name);
     }
+  }
+
+  const logs = await env.KV.list({ prefix: "logs:" });
+  for (const key of logs.keys) {
+    await env.KV.delete(key.name);
+    console.log(`Cleaned up log: ${key.name}`);
   }
 }
 
@@ -262,6 +298,10 @@ export default {
 
     if (url.pathname === "/cleanup" && request.method === "POST") {
       return handleCleanup(request, env);
+    }
+
+    if (url.pathname === "/logs" && request.method === "POST") {
+      return handleLogs(request, env);
     }
 
     return new Response("Not Found", { status: 404 });

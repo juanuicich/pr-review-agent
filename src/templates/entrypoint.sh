@@ -68,7 +68,13 @@ fi
 
 cd "$REVIEW_DIR"
 OPENCODE_DANGEROUSLY_SKIP_PERMISSIONS=true \
-opencode run "$(cat /workspace/review-prompt.md)" --dir "$REVIEW_DIR" || true
+opencode run "$(cat /workspace/review-prompt.md)" --dir "$REVIEW_DIR" \
+  2>&1 | tee /workspace/review-output.log || true
+
+curl -sf -X POST "${REVIEW_WORKER_URL}/logs?owner=${OWNER}&repo=${REPO}&pr_number=${PR_NUMBER}" \
+  -H "Authorization: Bearer ${REVIEW_WORKER_TOKEN}" \
+  -H "Content-Type: text/plain" \
+  --data-binary @/workspace/review-output.log || true
 
 curl -sf -X POST "${REVIEW_WORKER_URL}/cleanup" \
   -H "Authorization: Bearer ${REVIEW_WORKER_TOKEN}" \
