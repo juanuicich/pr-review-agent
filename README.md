@@ -62,19 +62,24 @@ Paste the returned KV namespace ID and your chosen bucket name into the GitHub r
 
 ### Secrets
 
-Set via `wrangler secret put`:
+**GitHub** (only `CLOUDFLARE_API_TOKEN` is needed for CI):
 
-```
-AUTH_TOKEN             # Shared secret for worker authentication
-CLOUDFLARE_ACCOUNT_ID  # Your Cloudflare account ID
-GH_TOKEN               # GitHub PAT with repo access
-LINEAR_API_KEY         # Linear API key (optional, for issue context)
-LLM_API_KEY            # API key for the selected LLM provider
-OPENCODE_MODEL         # Model in provider/model format (e.g. deepseek/deepseek-v4-pro)
-REVIEW_WORKER_URL      # Deployed worker URL (e.g. https://pr-review-agent.<account>.workers.dev)
-R2_ACCESS_KEY_ID       # R2 API token for backup presigned URLs
-R2_SECRET_ACCESS_KEY   # R2 API token for backup presigned URLs
-```
+| Secret | Where to get it |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | [Cloudflare Dashboard > API Tokens > Create Token](https://dash.cloudflare.com/profile/api-tokens) -- use "Edit Cloudflare Workers" template |
+
+**Worker** (set via `npx wrangler secret put <NAME> --name pr-review-agent`):
+
+| Secret | Where to get it |
+|---|---|
+| `AUTH_TOKEN` | Generate one: `openssl rand -hex 32` |
+| `GH_TOKEN` | [GitHub Settings > Developer settings > Personal access tokens](https://github.com/settings/tokens) |
+| `LINEAR_API_KEY` | [Linear Settings > API > Personal API Keys](https://linear.app/settings/account/security) |
+| `LLM_API_KEY` | Your LLM provider's dashboard (e.g. Anthropic, OpenAI, DeepSeek) |
+| `OPENCODE_MODEL` | Not a secret -- set via `wrangler secret put` or as a Worker var. Format: `provider/model` (e.g. `anthropic/claude-sonnet-4-6`) |
+| `REVIEW_WORKER_URL` | Set after first deploy (e.g. `https://pr-review-agent.<account>.workers.dev`) |
+| `R2_ACCESS_KEY_ID` | [Cloudflare Dashboard > R2 > Manage R2 API Tokens > Create API Token](https://dash.cloudflare.com/?to=/:account/r2/security-tokens) |
+| `R2_SECRET_ACCESS_KEY` | Created alongside the R2 access key above |
 
 ## Deploy
 
