@@ -73,7 +73,7 @@ Paste the returned KV namespace ID and your chosen bucket name into the GitHub r
 | Secret | Where to get it |
 |---|---|
 | `AUTH_TOKEN` | Generate one: `openssl rand -hex 32` |
-| `GH_TOKEN` | [GitHub Settings > Developer settings > Personal access tokens](https://github.com/settings/tokens) |
+| `GH_TOKEN` | [GitHub Settings > Developer settings > Fine-grained personal access tokens](https://github.com/settings/personal-access-tokens/new) with these repository permissions: **Contents** (Read), **Pull requests** (Read and write), **Actions** (Read) |
 | `LINEAR_API_KEY` | [Linear Settings > API > Personal API Keys](https://linear.app/settings/account/security) |
 | `LLM_API_KEY` | Your LLM provider's dashboard (e.g. Anthropic, OpenAI, DeepSeek) |
 | `OPENCODE_MODEL` | Not a secret -- set via `wrangler secret put` or as a Worker var. Format: `provider/model` (e.g. `anthropic/claude-sonnet-4-6`) |
