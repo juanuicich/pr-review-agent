@@ -10,15 +10,24 @@ RUN_ID="$6"
 BASE_BRANCH="$7"
 HEAD_BRANCH="$8"
 
+export PATH="/root/.opencode/bin:/root/.local/bin:$PATH"
+
 WORKSPACE="/workspace"
 REVIEW_DIR="/workspace/review"
 
-mkdir -p "$REVIEW_DIR"
-cd "$REVIEW_DIR"
+if [ -d "$REVIEW_DIR/.git" ]; then
+  cd "$REVIEW_DIR"
+  git fetch origin 2>/dev/null || true
+else
+  mkdir -p "$REVIEW_DIR"
+  gh repo clone "$FULL_REPO" "$REVIEW_DIR"
+  cd "$REVIEW_DIR"
+fi
 
-gh repo clone "$FULL_REPO" .
-git fetch origin "pull/$PR_NUMBER/head:pr-$PR_NUMBER"
-git checkout "pr-$PR_NUMBER"
+gh auth setup-git 2>/dev/null || true
+
+git fetch origin "pull/$PR_NUMBER/head:pr-$PR_NUMBER" 2>/dev/null || true
+git checkout "pr-$PR_NUMBER" 2>/dev/null || true
 
 mkdir -p /workspace/ci-logs
 gh run view "$RUN_ID" --log > /workspace/ci-logs/run.log 2>/dev/null || true
@@ -66,9 +75,9 @@ if [ -f .review-agent/prompt.md ]; then
   cp .review-agent/prompt.md /workspace/REVIEW_AGENT.md
 fi
 
-cd "$REVIEW_DIR"
+cd "$WORKSPACE"
 OPENCODE_DANGEROUSLY_SKIP_PERMISSIONS=true \
-opencode run "$(cat /workspace/review-prompt.md)" --dir "$REVIEW_DIR" \
+opencode run "$(cat /workspace/review-prompt.md)" --dir "$WORKSPACE" \
   2>&1 | tee /workspace/review-output.log || true
 
 curl -sf -X POST "${REVIEW_WORKER_URL}/logs?owner=${OWNER}&repo=${REPO}&pr_number=${PR_NUMBER}" \

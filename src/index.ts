@@ -21,6 +21,7 @@ interface ActiveReview {
   prNumber: number;
   sha: string;
   startedAt: string;
+  runId: string;
 }
 
 function buildOpenCodeConfig(model: string): string {
@@ -53,14 +54,6 @@ function validateAuth(request: Request, token: string): boolean {
   return parts[1] === token;
 }
 
-async function hashContent(content: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(content);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
 async function fetchGitHubFile(
   env: Env,
   fullRepo: string,
@@ -90,9 +83,26 @@ async function fetchGitHubFile(
   return null;
 }
 
-async function handleReview(request: Request, env: Env): Promise<Response> {
+async function handleReview(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   if (!validateAuth(request, env.AUTH_TOKEN)) {
     return new Response("Unauthorized", { status: 401 });
+  }
+
+  const missing = [
+    ["OPENCODE_MODEL", env.OPENCODE_MODEL],
+    ["GH_TOKEN", env.GH_TOKEN],
+    ["LLM_API_KEY", env.LLM_API_KEY],
+    ["LINEAR_API_KEY", env.LINEAR_API_KEY],
+    ["REVIEW_WORKER_URL", env.REVIEW_WORKER_URL],
+  ]
+    .filter(([, v]) => !v)
+    .map(([k]) => k);
+
+  if (missing.length > 0) {
+    return new Response(
+      JSON.stringify({ error: `Missing worker secrets: ${missing.join(", ")}` }),
+      { status: 500, headers: { "Content-Type": "application/json" } },
+    );
   }
 
   const body = (await request.json()) as {
@@ -122,7 +132,9 @@ async function handleReview(request: Request, env: Env): Promise<Response> {
     await env.KV.delete(kvKey);
   }
 
-  const sandbox = getSandbox(env.Sandbox, kvKey);
+  const sandbox = getSandbox(env.Sandbox, `${kvKey}:${run_id}`, {
+    sleepAfter: "30m",
+  });
   const sandboxId = kvKey;
 
   await sandbox.setEnvVars({
@@ -145,19 +157,9 @@ async function handleReview(request: Request, env: Env): Promise<Response> {
     ".review-agent/prompt.md",
   );
 
-  const setupHash = await hashContent((setupScript ?? "") + (promptMd ?? ""));
-  const backupKey = `backup:${owner}:${repo}:${setupHash}`;
-
-  const existingBackup = await env.KV.get(backupKey);
-  if (existingBackup) {
-    const backupHandle = JSON.parse(existingBackup);
-    backupHandle.localBucket = true;
-    await sandbox.restoreBackup(backupHandle);
-  } else if (setupScript) {
+  if (setupScript) {
     await sandbox.writeFile("/workspace/setup.sh", setupScript);
     await sandbox.exec("bash /workspace/setup.sh");
-    const backup = await sandbox.createBackup({ dir: "/workspace", localBucket: true });
-    await env.KV.put(backupKey, JSON.stringify(backup));
   }
 
   await sandbox.writeFile("/workspace/.opencode.json", buildOpenCodeConfig(env.OPENCODE_MODEL));
@@ -168,10 +170,6 @@ async function handleReview(request: Request, env: Env): Promise<Response> {
   await sandbox.writeFile("/workspace/entrypoint.sh", ENTRYPOINT_SCRIPT);
   await sandbox.exec("chmod +x /workspace/entrypoint.sh");
 
-  await sandbox.startProcess(
-    `bash /workspace/entrypoint.sh ${owner} ${repo} ${full_repo} ${pr_number} ${sha} ${run_id} ${base_branch} ${head_branch}`,
-  );
-
   const review: ActiveReview = {
     sandboxId,
     owner,
@@ -179,8 +177,16 @@ async function handleReview(request: Request, env: Env): Promise<Response> {
     prNumber: pr_number,
     sha,
     startedAt: new Date().toISOString(),
+    runId: run_id,
   };
   await env.KV.put(kvKey, JSON.stringify(review));
+
+  await sandbox.startProcess(
+    `bash /workspace/entrypoint.sh ${owner} ${repo} ${full_repo} ${pr_number} ${sha} ${run_id} ${base_branch} ${head_branch}`,
+    {
+      autoCleanup: false,
+    },
+  );
 
   return new Response(JSON.stringify({ status: "started" }), {
     status: 200,
@@ -239,15 +245,21 @@ async function handleCleanup(request: Request, env: Env): Promise<Response> {
   }
 
   const kvKey = `pr:${owner}:${repo}:${pr_number}`;
-  if (sha) {
-    const existing = (await env.KV.get(kvKey, "json")) as ActiveReview | null;
-    if (existing && existing.sha !== sha) {
-      return new Response(JSON.stringify({ status: "skipped" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
+  const existing = (await env.KV.get(kvKey, "json")) as ActiveReview | null;
+  if (sha && existing && existing.sha !== sha) {
+    return new Response(JSON.stringify({ status: "skipped" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
   }
+
+  if (existing && existing.runId) {
+    const sandbox = getSandbox(env.Sandbox, `${kvKey}:${existing.runId}`, {
+      sleepAfter: "30m",
+    });
+    await sandbox.destroy().catch(() => {});
+  }
+
   await env.KV.delete(kvKey);
 
   return new Response(JSON.stringify({ status: "cleaned" }), {
@@ -269,6 +281,12 @@ async function handleScheduled(event: ScheduledEvent, env: Env): Promise<void> {
       const review: ActiveReview = JSON.parse(raw);
       const startedAt = new Date(review.startedAt).getTime();
       if (now - startedAt > timeoutMs) {
+        if (review.runId) {
+          const sandbox = getSandbox(env.Sandbox, `${key.name}:${review.runId}`, {
+            sleepAfter: "30m",
+          });
+          await sandbox.destroy().catch(() => {});
+        }
         await env.KV.delete(key.name);
         console.log(`Cleaned up stale review: ${key.name}`);
       }
@@ -293,7 +311,7 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/review" && request.method === "POST") {
-      return handleReview(request, env);
+      return handleReview(request, env, ctx);
     }
 
     if (url.pathname === "/cleanup" && request.method === "POST") {
