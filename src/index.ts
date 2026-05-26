@@ -12,6 +12,8 @@ interface Env {
   REVIEW_WORKER_URL: string;
   OPENCODE_MODEL: string;
   LLM_API_KEY: string;
+  GITHUB_APP_ID?: string;
+  GITHUB_APP_PRIVATE_KEY?: string;
 }
 
 interface ActiveReview {
@@ -54,8 +56,102 @@ function validateAuth(request: Request, token: string): boolean {
   return parts[1] === token;
 }
 
+function pemToArrayBuffer(pem: string): ArrayBuffer {
+  const b64 = pem
+    .replace(/-----BEGIN RSA PRIVATE KEY-----/, "")
+    .replace(/-----END RSA PRIVATE KEY-----/, "")
+    .replace(/\s/g, "");
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
+
+async function signJWT(appId: string, privateKeyPem: string): Promise<string> {
+  const header = { alg: "RS256", typ: "JWT" };
+  const now = Math.floor(Date.now() / 1000);
+  const payload = { iat: now - 60, exp: now + 600, iss: appId };
+
+  const encoder = new TextEncoder();
+  const encodedHeader = btoa(JSON.stringify(header)).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+  const encodedPayload = btoa(JSON.stringify(payload)).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+  const signingInput = `${encodedHeader}.${encodedPayload}`;
+
+  const keyData = pemToArrayBuffer(privateKeyPem);
+  const cryptoKey = await crypto.subtle.importKey(
+    "pkcs8",
+    keyData,
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+
+  const signature = await crypto.subtle.sign(
+    "RSASSA-PKCS1-v1_5",
+    cryptoKey,
+    encoder.encode(signingInput),
+  );
+
+  const encodedSignature = btoa(String.fromCharCode(...new Uint8Array(signature)))
+    .replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+
+  return `${signingInput}.${encodedSignature}`;
+}
+
+async function getInstallationToken(env: Env): Promise<string> {
+  if (!env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY) {
+    return env.GH_TOKEN;
+  }
+
+  const cacheKey = "github:app:installation_id";
+  let installationId = await env.KV.get(cacheKey);
+
+  const jwt = await signJWT(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
+
+  if (!installationId) {
+    const resp = await fetch("https://api.github.com/app/installations", {
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        Accept: "application/vnd.github.v3+json",
+        "User-Agent": "pr-review-agent",
+      },
+    });
+    if (!resp.ok) {
+      console.error(`Failed to list installations: ${resp.status}`);
+      return env.GH_TOKEN;
+    }
+    const installations = (await resp.json()) as { id: number }[];
+    if (installations.length === 0) {
+      console.error("No app installations found");
+      return env.GH_TOKEN;
+    }
+    installationId = String(installations[0].id);
+    await env.KV.put(cacheKey, installationId, { expirationTtl: 7 * 24 * 60 * 60 });
+  }
+
+  const tokenResp = await fetch(
+    `https://api.github.com/app/installations/${installationId}/access_tokens`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${jwt}`,
+        Accept: "application/vnd.github.v3+json",
+        "User-Agent": "pr-review-agent",
+      },
+    },
+  );
+  if (!tokenResp.ok) {
+    console.error(`Failed to create installation token: ${tokenResp.status}`);
+    return env.GH_TOKEN;
+  }
+  const tokenData = (await tokenResp.json()) as { token: string };
+  return tokenData.token;
+}
+
 async function fetchGitHubFile(
-  env: Env,
+  ghToken: string,
   fullRepo: string,
   path: string,
 ): Promise<string | null> {
@@ -63,7 +159,7 @@ async function fetchGitHubFile(
     `https://api.github.com/repos/${fullRepo}/contents/${path}`,
     {
       headers: {
-        Authorization: `Bearer ${env.GH_TOKEN}`,
+        Authorization: `Bearer ${ghToken}`,
         Accept: "application/vnd.github.v3+json",
         "User-Agent": "pr-review-agent",
       },
@@ -91,12 +187,21 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
   const missing = [
     ["OPENCODE_MODEL", env.OPENCODE_MODEL],
     ["GH_TOKEN", env.GH_TOKEN],
+    ["GITHUB_APP_ID", env.GITHUB_APP_ID],
+    ["GITHUB_APP_PRIVATE_KEY", env.GITHUB_APP_PRIVATE_KEY],
     ["LLM_API_KEY", env.LLM_API_KEY],
     ["LINEAR_API_KEY", env.LINEAR_API_KEY],
     ["REVIEW_WORKER_URL", env.REVIEW_WORKER_URL],
   ]
     .filter(([, v]) => !v)
     .map(([k]) => k);
+
+  if (!env.GH_TOKEN && (!env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY)) {
+    return new Response(
+      JSON.stringify({ error: "Missing GitHub credentials: set GH_TOKEN or both GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY" }),
+      { status: 500, headers: { "Content-Type": "application/json" } },
+    );
+  }
 
   if (missing.length > 0) {
     return new Response(
@@ -137,8 +242,10 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
   });
   const sandboxId = kvKey;
 
+  const ghToken = await getInstallationToken(env);
+
   await sandbox.setEnvVars({
-    GH_TOKEN: env.GH_TOKEN,
+    GH_TOKEN: ghToken,
     LINEAR_API_KEY: env.LINEAR_API_KEY,
     LLM_API_KEY: env.LLM_API_KEY,
     REVIEW_WORKER_URL: env.REVIEW_WORKER_URL,
@@ -147,12 +254,12 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
   });
 
   const setupScript = await fetchGitHubFile(
-    env,
+    ghToken,
     full_repo,
     ".review-agent/setup.sh",
   );
   const promptMd = await fetchGitHubFile(
-    env,
+    ghToken,
     full_repo,
     ".review-agent/prompt.md",
   );
@@ -186,7 +293,7 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
     {
       autoCleanup: false,
       env: {
-        GH_TOKEN: env.GH_TOKEN,
+        GH_TOKEN: ghToken,
         LINEAR_API_KEY: env.LINEAR_API_KEY,
         LLM_API_KEY: env.LLM_API_KEY,
         REVIEW_WORKER_URL: env.REVIEW_WORKER_URL,
