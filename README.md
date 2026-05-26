@@ -73,11 +73,51 @@ Paste the returned KV namespace ID and your chosen bucket name into the GitHub r
 | Secret | Where to get it |
 |---|---|
 | `AUTH_TOKEN` | Generate one: `openssl rand -hex 32` |
-| `GH_TOKEN` | [GitHub Settings > Developer settings > Fine-grained personal access tokens](https://github.com/settings/personal-access-tokens/new) with these repository permissions: **Contents** (Read), **Pull requests** (Read and write), **Actions** (Read) |
 | `LINEAR_API_KEY` | [Linear Settings > API > Personal API Keys](https://linear.app/settings/account/security) |
 | `LLM_API_KEY` | Your LLM provider's dashboard (e.g. Anthropic, OpenAI, DeepSeek) |
 | `OPENCODE_MODEL` | Not a secret -- set via `wrangler secret put` or as a Worker var. Format: `provider/model` (e.g. `anthropic/claude-sonnet-4-6`) |
 | `REVIEW_WORKER_URL` | Set after first deploy (e.g. `https://pr-review-agent.<account>.workers.dev`) |
+
+**GitHub authentication** — choose one:
+
+| Secret | Description |
+|---|---|
+| `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY` | **(Recommended)** Auto-generates installation tokens so reviews post as the bot (`app-name[bot]`). See [Creating a GitHub App](#creating-a-github-app) below. |
+| `GH_TOKEN` | **(Fallback)** A personal access token. Works but reviews post under your personal GitHub user. [GitHub Settings > Developer settings > Fine-grained tokens](https://github.com/settings/personal-access-tokens/new) with: **Contents** (Read), **Pull requests** (Read and write), **Actions** (Read). |
+
+If both are set, the App takes precedence.
+
+### Creating a GitHub App
+
+To post reviews under a bot identity instead of your personal account:
+
+1. Go to **GitHub Settings > Developer settings > GitHub Apps > New GitHub App**
+2. Configure:
+   - **GitHub App name:** `pr-review-agent` (or any name — this becomes the bot username)
+   - **Homepage URL:** your repo URL or any valid URL
+   - **Webhook:** uncheck "Active" (not needed)
+   - **Callback URL:** leave blank
+   - **Expire user authorization tokens:** check this box (disables user-to-server OAuth)
+3. Permissions:
+   - **Contents:** Read-only
+   - **Pull requests:** Read and write
+   - **Actions:** Read-only
+4. **Where can this GitHub App be installed?** — choose "Any account"
+5. Click **Create GitHub App**
+6. Note the **App ID** at the top of the settings page
+7. Scroll to **Private keys** and click **Generate a private key** — save the `.pem` file
+8. **Install the App** on your organization/repo:
+   - Go to **Install App** in the sidebar
+   - Select your organization
+   - Choose "Only select repositories" and pick the target repo(s)
+9. Set the secrets on the worker:
+
+```sh
+wrangler secret put GITHUB_APP_ID       # paste the App ID
+wrangler secret put GITHUB_APP_PRIVATE_KEY  # paste the full PEM file
+```
+
+The worker auto-generates a fresh installation token on each review. The installation ID is cached in KV for 7 days.
 
 ## Deploy
 
