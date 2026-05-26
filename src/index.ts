@@ -213,7 +213,7 @@ async function handleLogs(request: Request, env: Env): Promise<Response> {
 
   const output = await request.text();
   const logKey = `logs:${owner}:${repo}:${prNumber}`;
-  await env.KV.put(logKey, output);
+  await env.KV.put(logKey, output, { expirationTtl: 7 * 24 * 60 * 60 });
 
   const tail = output.length > 4000 ? `\n...truncated...\n${output.slice(-4000)}` : output;
   console.log(`[${owner}/${repo}#${prNumber}] Review output:\n${tail}`);
@@ -281,12 +281,6 @@ async function handleScheduled(event: ScheduledEvent, env: Env): Promise<void> {
       const review: ActiveReview = JSON.parse(raw);
       const startedAt = new Date(review.startedAt).getTime();
       if (now - startedAt > timeoutMs) {
-        if (review.runId) {
-          const sandbox = getSandbox(env.Sandbox, `${key.name}:${review.runId}`, {
-            sleepAfter: "30m",
-          });
-          await sandbox.destroy().catch(() => {});
-        }
         await env.KV.delete(key.name);
         console.log(`Cleaned up stale review: ${key.name}`);
       }
@@ -295,11 +289,6 @@ async function handleScheduled(event: ScheduledEvent, env: Env): Promise<void> {
     }
   }
 
-  const logs = await env.KV.list({ prefix: "logs:" });
-  for (const key of logs.keys) {
-    await env.KV.delete(key.name);
-    console.log(`Cleaned up log: ${key.name}`);
-  }
 }
 
 export default {
