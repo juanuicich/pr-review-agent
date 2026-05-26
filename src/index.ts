@@ -185,6 +185,14 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
     `bash /workspace/entrypoint.sh ${owner} ${repo} ${full_repo} ${pr_number} ${sha} ${run_id} ${base_branch} ${head_branch}`,
     {
       autoCleanup: false,
+      env: {
+        GH_TOKEN: env.GH_TOKEN,
+        LINEAR_API_KEY: env.LINEAR_API_KEY,
+        LLM_API_KEY: env.LLM_API_KEY,
+        REVIEW_WORKER_URL: env.REVIEW_WORKER_URL,
+        REVIEW_WORKER_TOKEN: env.AUTH_TOKEN,
+        MISE_DATA_DIR: "/workspace/.mise",
+      },
     },
   );
 
