@@ -13,7 +13,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get update && apt-get install -y gh \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -fsSL https://opencode.ai/install | bash
+RUN curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh | CONFIGURE=false bash
 
 RUN curl -fsSL https://mise.run | sh \
     && mv ~/.local/bin/mise /usr/local/bin/mise

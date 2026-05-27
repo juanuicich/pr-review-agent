@@ -1,15 +1,15 @@
 # pr-review-agent
 
-AI-powered code review agent that runs on Cloudflare Workers. A GitHub Action triggers the worker, which spins up a sandboxed environment to clone the PR, gather context (CI logs, Linear issues, diff), and run code review via `opencode`. The agent decides whether to approve, request changes, comment, or skip review entirely.
+AI-powered code review agent that runs on Cloudflare Workers. A GitHub Action triggers the worker, which spins up a sandboxed environment to clone the PR, gather context (CI logs, Linear issues, diff), and run code review via `goose`. The agent decides whether to approve, request changes, comment, or skip review entirely.
 
-Supports any LLM provider that opencode supports (DeepSeek, Anthropic, OpenAI, Google, etc). Model selection is configured via an environment variable.
+Supports any LLM provider that goose supports (DeepSeek, Anthropic, OpenAI, Google, etc). Model selection is configured via an environment variable.
 
 ## Architecture
 
 ```
 GitHub Action  ──POST /review──▶  Cloudflare Worker
                                       │
-                                      ├─ Create Sandbox (Docker image with gh, opencode, mise, jq)
+                                       ├─ Create Sandbox (Docker image with gh, goose, mise, jq)
                                       ├─ Fetch .review-agent/setup.sh from GitHub
                                       ├─ Hash setup.sh + prompt.md, check KV for cached R2 backup
                                       │   ├─ Backup exists: restore it (skip setup)
@@ -17,7 +17,7 @@ GitHub Action  ──POST /review──▶  Cloudflare Worker
                                       ├─ Write agent config + entrypoint into sandbox
                                       ├─ Start entrypoint as background process
                                       │   ├─ Clone PR, gather context (CI logs, Linear, diff)
-                                      │   ├─ Run `opencode run`
+                                       │   ├─ Run `goose run`
                                       │   └─ Agent posts review via `gh pr review`
                                       └─ Store active review in KV
                                       │
@@ -75,7 +75,7 @@ Paste the returned KV namespace ID and your chosen bucket name into the GitHub r
 | `AUTH_TOKEN` | Generate one: `openssl rand -hex 32` |
 | `LINEAR_API_KEY` | [Linear Settings > API > Personal API Keys](https://linear.app/settings/account/security) |
 | `LLM_API_KEY` | Your LLM provider's dashboard (e.g. Anthropic, OpenAI, DeepSeek) |
-| `OPENCODE_MODEL` | Not a secret -- set via `wrangler secret put` or as a Worker var. Format: `provider/model` (e.g. `anthropic/claude-sonnet-4-6`) |
+| `GOOSE_MODEL` | Not a secret -- set via `wrangler secret put` or as a Worker var. Format: `provider/model` (e.g. `anthropic/claude-sonnet-4-6`) |
 | `REVIEW_WORKER_URL` | Set after first deploy (e.g. `https://pr-review-agent.<account>.workers.dev`) |
 
 **GitHub authentication** — choose one:
