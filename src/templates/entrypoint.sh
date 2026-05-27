@@ -14,6 +14,8 @@ export PATH="/root/.opencode/bin:/root/.local/bin:$PATH"
 
 WORKSPACE="/workspace"
 REVIEW_DIR="/workspace/review"
+ERRORS_FILE="/workspace/errors.log"
+> "$ERRORS_FILE"
 
 if [ -d "$REVIEW_DIR/.git" ]; then
   cd "$REVIEW_DIR"
@@ -30,10 +32,10 @@ git fetch origin "pull/$PR_NUMBER/head:pr-$PR_NUMBER" 2>/dev/null || true
 git checkout "pr-$PR_NUMBER" 2>/dev/null || true
 
 mkdir -p /workspace/ci-logs
-gh run view "$RUN_ID" --log > /workspace/ci-logs/run.log 2>/dev/null || true
+gh run view "$RUN_ID" --log > /workspace/ci-logs/run.log 2>>"$ERRORS_FILE" || true
 gh run view "$RUN_ID" --json jobs \
   --jq '.jobs[] | {name, conclusion, steps: [.steps[] | {name, conclusion}]}' \
-  > /workspace/ci-logs/summary.json 2>/dev/null || true
+  > /workspace/ci-logs/summary.json 2>>"$ERRORS_FILE" || true
 
 if [ -f "$REVIEW_DIR/.linear.toml" ]; then
   cp "$REVIEW_DIR/.linear.toml" /workspace/.linear.toml
@@ -45,14 +47,18 @@ LINEAR_ISSUE_ID=$(gh pr view "$PR_NUMBER" --json body,labels --jq '
 ' 2>/dev/null || echo "")
 
 if [ -n "$LINEAR_ISSUE_ID" ]; then
-  linear issue view "LIN-$LINEAR_ISSUE_ID" --json > /workspace/linear-context.json 2>/dev/null || true
+  linear issue view "LIN-$LINEAR_ISSUE_ID" --json > /workspace/linear-context.json 2>>"$ERRORS_FILE" || true
 fi
 
 gh pr view "$PR_NUMBER" --json \
   title,body,author,comments,reviews,labels,additions,deletions,changedFiles,baseRefName,headRefName \
-  > /workspace/pr-context.json 2>/dev/null || true
+  > /workspace/pr-context.json 2>>"$ERRORS_FILE" || true
 
-gh pr diff "$PR_NUMBER" > /workspace/pr.diff 2>/dev/null || true
+gh pr diff "$PR_NUMBER" > /workspace/pr.diff 2>>"$ERRORS_FILE" || true
+
+if [ ! -s /workspace/pr.diff ]; then
+  echo "Error: pr.diff is empty — gh pr diff may have failed (check /workspace/errors.log)" >> "$ERRORS_FILE"
+fi
 
 cat > /workspace/review-prompt.md <<PROMPT
 Review PR #${PR_NUMBER} on ${FULL_REPO}.
@@ -65,6 +71,7 @@ Context files available in /workspace:
 - pr.diff         — Full diff of all changes
 - ci-logs/        — CI run log and per-job summary
 - linear-context.json — Associated Linear issue (if any)
+- errors.log      — Any errors encountered while gathering context
 
 The repo is cloned at ${REVIEW_DIR}.
 
