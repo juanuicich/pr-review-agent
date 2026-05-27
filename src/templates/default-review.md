@@ -19,6 +19,14 @@ You can delegate work to subagents when it helps (e.g. running build/lint/test i
 6. Run local checks (build, lint, test) against the checked-out PR branch at /workspace/review. Follow the repo's own commands (check `AGENTS.md`, `package.json` scripts, `Makefile`, etc.). Build first since lint and test may depend on compiled output. If CI already covers this adequately and is green, you may skip local checks.
 7. If the PR is trivial and correct, post a brief approval and stop here. If there is nothing meaningful to add, skip the review entirely.
 
+## Existing comments
+
+Read all existing review comments and inline comments on the PR before writing your review. Use them as context:
+
+- If a previous review flagged an issue and it is still unfixed, refer back to that comment explicitly rather than raising the same point as if new. Mention that it was previously flagged and remains unresolved.
+- If a previous issue was addressed (fixed, deferred, marked intentional, marked not planned, or otherwise acknowledged by the author), do not bring it up again. Respect the author's decision and move on.
+- If a previous concern led to a discussion with a clear outcome, honour that outcome. Only revisit if new information in the current diff contradicts the resolution.
+
 ## Review checklist
 
 Use this checklist as a lens, in priority order:
