@@ -232,15 +232,21 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
 
   const kvKey = `pr:${owner}:${repo}:${pr_number}`;
 
-  const existing = await env.KV.get(kvKey);
+  const existing = (await env.KV.get(kvKey, "json")) as ActiveReview | null;
   if (existing) {
+    if (existing.runId === run_id) {
+      return new Response(
+        JSON.stringify({ error: "Review already in progress for this PR" }),
+        { status: 409, headers: { "Content-Type": "application/json" } },
+      );
+    }
     await env.KV.delete(kvKey);
   }
 
   const sandbox = getSandbox(env.Sandbox, `${kvKey}:${run_id}`, {
     sleepAfter: "30m",
   });
-  const sandboxId = kvKey;
+  const sandboxId = `${kvKey}:${run_id}`;
 
   const ghToken = await getInstallationToken(env);
 
@@ -266,7 +272,7 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
 
   if (setupScript) {
     await sandbox.writeFile("/workspace/setup.sh", setupScript);
-    await sandbox.exec("bash /workspace/setup.sh");
+    await sandbox.exec("bash /workspace/setup.sh", { timeout: 300_000 });
   }
 
   await sandbox.writeFile("/workspace/.opencode.json", buildOpenCodeConfig(env.OPENCODE_MODEL));
@@ -323,6 +329,14 @@ async function handleLogs(request: Request, env: Env): Promise<Response> {
     return new Response(
       JSON.stringify({ error: "Missing required fields" }),
       { status: 400, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  const contentLength = request.headers.get("Content-Length");
+  if (contentLength && parseInt(contentLength, 10) > 1_048_576) {
+    return new Response(
+      JSON.stringify({ error: "Log body exceeds 1 MB limit" }),
+      { status: 413, headers: { "Content-Type": "application/json" } },
     );
   }
 
