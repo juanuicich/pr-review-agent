@@ -10,7 +10,7 @@ interface Env {
   GH_TOKEN: string;
   LINEAR_API_KEY: string;
   REVIEW_WORKER_URL: string;
-  OPENCODE_MODEL: string;
+  GOOSE_MODEL: string;
   LLM_API_KEY: string;
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
@@ -26,26 +26,24 @@ interface ActiveReview {
   runId: string;
 }
 
-function buildOpenCodeConfig(model: string): string {
+function parseGooseModel(model: string): { provider: string; modelName: string; apiKeyEnvVar: string } {
   const provider = model.split("/")[0];
-  return JSON.stringify(
-    {
-      $schema: "https://opencode.ai/config.json",
-      model,
-      provider: {
-        [provider]: {
-          options: {
-            apiKey: "{env:LLM_API_KEY}",
-          },
-        },
-      },
-      permission: {
-        "*": "allow",
-      },
-    },
-    null,
-    2,
-  );
+  const modelName = model.split("/").slice(1).join("/");
+  const PROVIDER_API_KEY_MAP: Record<string, string> = {
+    anthropic: "ANTHROPIC_API_KEY",
+    openai: "OPENAI_API_KEY",
+    openrouter: "OPENROUTER_API_KEY",
+    google: "GOOGLE_API_KEY",
+    deepseek: "DEEPSEEK_API_KEY",
+    xai: "XAI_API_KEY",
+    mistral: "MISTRAL_API_KEY",
+    ollama: "OLLAMA_API_KEY",
+  };
+  return {
+    provider,
+    modelName,
+    apiKeyEnvVar: PROVIDER_API_KEY_MAP[provider] ?? `${provider.toUpperCase()}_API_KEY`,
+  };
 }
 
 function validateAuth(request: Request, token: string): boolean {
@@ -185,7 +183,7 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
   }
 
   const missing = [
-    ["OPENCODE_MODEL", env.OPENCODE_MODEL],
+    ["GOOSE_MODEL", env.GOOSE_MODEL],
     ["GH_TOKEN", env.GH_TOKEN],
     ["GITHUB_APP_ID", env.GITHUB_APP_ID],
     ["GITHUB_APP_PRIVATE_KEY", env.GITHUB_APP_PRIVATE_KEY],
@@ -250,15 +248,6 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
 
   const ghToken = await getInstallationToken(env);
 
-  await sandbox.setEnvVars({
-    GH_TOKEN: ghToken,
-    LINEAR_API_KEY: env.LINEAR_API_KEY,
-    LLM_API_KEY: env.LLM_API_KEY,
-    REVIEW_WORKER_URL: env.REVIEW_WORKER_URL,
-    REVIEW_WORKER_TOKEN: env.AUTH_TOKEN,
-    MISE_DATA_DIR: "/workspace/.mise",
-  });
-
   const setupScript = await fetchGitHubFile(
     ghToken,
     full_repo,
@@ -275,7 +264,20 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
     await sandbox.exec("bash /workspace/setup.sh", { timeout: 300_000 });
   }
 
-  await sandbox.writeFile("/workspace/.opencode.json", buildOpenCodeConfig(env.OPENCODE_MODEL));
+  const { provider, modelName, apiKeyEnvVar } = parseGooseModel(env.GOOSE_MODEL);
+
+  await sandbox.setEnvVars({
+    GOOSE_PROVIDER: provider,
+    GOOSE_MODEL: modelName,
+    [apiKeyEnvVar]: env.LLM_API_KEY,
+    GOOSE_DISABLE_KEYRING: "1",
+    GH_TOKEN: ghToken,
+    LINEAR_API_KEY: env.LINEAR_API_KEY,
+    LLM_API_KEY: env.LLM_API_KEY,
+    REVIEW_WORKER_URL: env.REVIEW_WORKER_URL,
+    REVIEW_WORKER_TOKEN: env.AUTH_TOKEN,
+    MISE_DATA_DIR: "/workspace/.mise",
+  });
   await sandbox.writeFile(
     "/workspace/REVIEW_AGENT.md",
     promptMd ?? DEFAULT_PROMPT,
@@ -299,6 +301,10 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
     {
       autoCleanup: false,
       env: {
+        GOOSE_PROVIDER: provider,
+        GOOSE_MODEL: modelName,
+        [apiKeyEnvVar]: env.LLM_API_KEY,
+        GOOSE_DISABLE_KEYRING: "1",
         GH_TOKEN: ghToken,
         LINEAR_API_KEY: env.LINEAR_API_KEY,
         LLM_API_KEY: env.LLM_API_KEY,
