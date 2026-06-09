@@ -10,7 +10,7 @@ RUN_ID="$6"
 BASE_BRANCH="$7"
 HEAD_BRANCH="$8"
 
-export PATH="/root/.opencode/bin:/root/.local/bin:$PATH"
+export PATH="/root/.local/bin:$PATH"
 
 WORKSPACE="/workspace"
 REVIEW_DIR="/workspace/review"
@@ -83,8 +83,8 @@ if [ -f .review-agent/prompt.md ]; then
 fi
 
 cd "$WORKSPACE"
-OPENCODE_DANGEROUSLY_SKIP_PERMISSIONS=true \
-opencode run "$(cat /workspace/review-prompt.md)" --dir "$WORKSPACE" \
+GOOSE_DISABLE_KEYRING=1 \
+goose run --no-session -t "$(cat /workspace/review-prompt.md)" \
   2>&1 | tee /workspace/review-output.log || true
 
 curl -sf -X POST "${REVIEW_WORKER_URL}/logs?owner=${OWNER}&repo=${REPO}&pr_number=${PR_NUMBER}" \
