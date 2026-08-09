@@ -85,6 +85,7 @@ fi
 cd "$WORKSPACE"
 OPENCODE_DANGEROUSLY_SKIP_PERMISSIONS=true \
 opencode run "$(cat /workspace/review-prompt.md)" --dir "$WORKSPACE" \
+  --variant "${OPENCODE_VARIANT:-max}" \
   2>&1 | tee /workspace/review-output.log || true
 
 curl -sf -X POST "${REVIEW_WORKER_URL}/logs?owner=${OWNER}&repo=${REPO}&pr_number=${PR_NUMBER}" \

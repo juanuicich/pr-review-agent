@@ -5,3 +5,4 @@ dist/
 wrangler.jsonc
 .env
 opencode.json
+.DS_Store

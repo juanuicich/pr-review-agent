@@ -11,6 +11,7 @@ interface Env {
   LINEAR_API_KEY: string;
   REVIEW_WORKER_URL: string;
   OPENCODE_MODEL: string;
+  OPENCODE_VARIANT?: string;
   LLM_API_KEY: string;
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
@@ -256,6 +257,7 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
     LLM_API_KEY: env.LLM_API_KEY,
     REVIEW_WORKER_URL: env.REVIEW_WORKER_URL,
     REVIEW_WORKER_TOKEN: env.AUTH_TOKEN,
+    OPENCODE_VARIANT: env.OPENCODE_VARIANT ?? "max",
     MISE_DATA_DIR: "/workspace/.mise",
   });
 
@@ -304,6 +306,7 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
         LLM_API_KEY: env.LLM_API_KEY,
         REVIEW_WORKER_URL: env.REVIEW_WORKER_URL,
         REVIEW_WORKER_TOKEN: env.AUTH_TOKEN,
+        OPENCODE_VARIANT: env.OPENCODE_VARIANT ?? "max",
         MISE_DATA_DIR: "/workspace/.mise",
       },
     },
