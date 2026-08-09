@@ -1,4 +1,4 @@
-import { getSandbox, type Sandbox } from "@cloudflare/sandbox";
+import { getSandbox, type DirectoryBackup, type Sandbox } from "@cloudflare/sandbox";
 import DEFAULT_PROMPT from "./templates/default-review.md";
 import ENTRYPOINT_SCRIPT from "./templates/entrypoint.sh";
 export { Sandbox } from "@cloudflare/sandbox";
@@ -358,7 +358,12 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
   let restored = false;
   if (existingBackup) {
     try {
-      await sandbox.restoreBackup(JSON.parse(existingBackup));
+      // Backups are created against the local R2 binding; make sure restore
+      // takes the same path (otherwise it tries presigned URLs -> undefined).
+      await sandbox.restoreBackup({
+        ...(JSON.parse(existingBackup) as DirectoryBackup),
+        localBucket: true,
+      });
       restored = true;
       console.log(`Restored setup backup for ${owner}/${repo}`);
     } catch (e) {
