@@ -11,13 +11,19 @@ You can delegate work to subagents when it helps (e.g. running build/lint/test i
 
 ## Process
 
-1. Read `/workspace/pr-context.json` for the PR title, body, comments, reviews, labels, and stats.
+1. Read `/workspace/pr-context.json` for the PR title, body, comments, reviews, labels, and stats. These files are pre-gathered by the harness — **do not re-fetch them with `gh pr view` or `gh pr diff`**.
 2. Read `/workspace/pr.diff` for the full diff.
 3. Read `/workspace/ci-logs/summary.json` for CI results. If CI is failing and the cause is obvious, factor that in.
 4. If `/workspace/linear-context.json` exists, read the associated Linear issue for acceptance criteria and context.
 5. Read the changed source files in full (not just the diff) so you understand surrounding context, call sites, and types.
 6. Run local checks (build, lint, test) against the checked-out PR branch at /workspace/review. Follow the repo's own commands (check `AGENTS.md`, `package.json` scripts, `Makefile`, etc.). Build first since lint and test may depend on compiled output. If CI already covers this adequately and is green, you may skip local checks.
 7. If the PR is trivial and correct, post a brief approval and stop here. If there is nothing meaningful to add, skip the review entirely.
+
+## Environment
+
+- `jq` is available for JSON parsing. `python3` is **not** installed.
+- `ripgrep` (`rg`) is available for code search.
+- `gh` is pre-authenticated; `linear` CLI is available if a `.linear.toml` exists in the repo.
 
 ## Existing comments
 

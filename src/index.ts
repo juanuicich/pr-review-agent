@@ -329,26 +329,24 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
 
   const ghToken = await getInstallationToken(env);
 
-  await sandbox.setEnvVars({
-    GH_TOKEN: ghToken,
-    LINEAR_API_KEY: env.LINEAR_API_KEY,
-    LLM_API_KEY: env.LLM_API_KEY,
-    REVIEW_WORKER_URL: env.REVIEW_WORKER_URL,
-    REVIEW_WORKER_TOKEN: env.AUTH_TOKEN,
-    OPENCODE_VARIANT: env.OPENCODE_VARIANT ?? "max",
-    MISE_DATA_DIR: "/workspace/.mise",
-  });
-
-  const setupScript = await fetchGitHubFile(
-    ghToken,
-    full_repo,
-    ".review-agent/setup.sh",
-  );
-  const promptMd = await fetchGitHubFile(
-    ghToken,
-    full_repo,
-    ".review-agent/prompt.md",
-  );
+  // Kick off independent operations in parallel: setting sandbox env vars,
+  // fetching repo config files, and creating the check run are all
+  // independent API calls that were previously sequential.
+  const logUrl = `${env.REVIEW_WORKER_URL}/logs?owner=${owner}&repo=${repo}&pr_number=${pr_number}`;
+  const [, setupScript, promptMd, checkRunId] = await Promise.all([
+    sandbox.setEnvVars({
+      GH_TOKEN: ghToken,
+      LINEAR_API_KEY: env.LINEAR_API_KEY,
+      LLM_API_KEY: env.LLM_API_KEY,
+      REVIEW_WORKER_URL: env.REVIEW_WORKER_URL,
+      REVIEW_WORKER_TOKEN: env.AUTH_TOKEN,
+      OPENCODE_VARIANT: env.OPENCODE_VARIANT ?? "max",
+      MISE_DATA_DIR: "/workspace/.mise",
+    }),
+    fetchGitHubFile(ghToken, full_repo, ".review-agent/setup.sh"),
+    fetchGitHubFile(ghToken, full_repo, ".review-agent/prompt.md"),
+    createCheckRun(ghToken, owner, repo, sha, logUrl),
+  ]);
 
   // Cache setup output in R2 (keyed on a hash of setup.sh + prompt.md) so we
   // don't re-run slow setup (e.g. building toolchains) on every review.
@@ -386,16 +384,12 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
     }
   }
 
-  await sandbox.writeFile("/workspace/.opencode.json", buildOpenCodeConfig(env.OPENCODE_MODEL));
-  await sandbox.writeFile(
-    "/workspace/REVIEW_AGENT.md",
-    promptMd ?? DEFAULT_PROMPT,
-  );
-  await sandbox.writeFile("/workspace/entrypoint.sh", ENTRYPOINT_SCRIPT);
+  await Promise.all([
+    sandbox.writeFile("/workspace/.opencode.json", buildOpenCodeConfig(env.OPENCODE_MODEL)),
+    sandbox.writeFile("/workspace/REVIEW_AGENT.md", promptMd ?? DEFAULT_PROMPT),
+    sandbox.writeFile("/workspace/entrypoint.sh", ENTRYPOINT_SCRIPT),
+  ]);
   await sandbox.exec("chmod +x /workspace/entrypoint.sh");
-
-  const logUrl = `${env.REVIEW_WORKER_URL}/logs?owner=${owner}&repo=${repo}&pr_number=${pr_number}`;
-  const checkRunId = await createCheckRun(ghToken, owner, repo, sha, logUrl);
 
   const review: ActiveReview = {
     sandboxId,

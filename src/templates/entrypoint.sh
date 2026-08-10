@@ -19,10 +19,27 @@ LOG_FILE="/workspace/review-output.log"
 > "$ERRORS_FILE"
 : > "$LOG_FILE"
 
-# Append a progress marker to both the console and the review log so that even
-# an early crash produces a useful uploaded log.
+START_TIME=$(date +%s)
+
+# Timestamped logger: writes "[HH:MM:SS +12.3s] [entrypoint] <msg>" to both
+# console and the review log so that even an early crash produces a useful
+# uploaded log. The elapsed offset makes it easy to see how long each phase
+# takes.
 log() {
-  echo "[entrypoint] $*" | tee -a "$LOG_FILE"
+  local now elapsed
+  now=$(date +%s)
+  elapsed=$(awk "BEGIN { printf \"%.1f\", ${now} - ${START_TIME} }")
+  printf '[%s +%ss] [entrypoint] %s\n' "$(date -u +%H:%M:%S)" "$elapsed" "$*" | tee -a "$LOG_FILE"
+}
+
+# Prefix every line of stdin with a wall-clock timestamp. Used to timestamp
+# the opencode output stream without disturbing its ANSI colour formatting.
+ts_lines() {
+  local line
+  while IFS= read -r line; do
+    printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$line"
+  done
+  [[ -n "${line:-}" ]] && printf '[%s] %s\n' "$(date -u +%H:%M:%S)" "$line"
 }
 
 # Always upload whatever logs we have and trigger cleanup, even on failure.
@@ -53,47 +70,60 @@ log "Starting review of ${FULL_REPO}#${PR_NUMBER} (sha ${SHA})"
 log "Cloning repository"
 if [ -d "$REVIEW_DIR/.git" ]; then
   cd "$REVIEW_DIR"
-  git fetch origin 2>/dev/null || true
+  git fetch origin "$BASE_BRANCH" --depth 1 2>/dev/null || git fetch origin 2>/dev/null || true
 else
   mkdir -p "$REVIEW_DIR"
-  gh repo clone "$FULL_REPO" "$REVIEW_DIR"
+  # Shallow + single-branch clone: avoids fetching every remote branch (many
+  # repos have dozens). We only need the base branch (for diffing) and the
+  # PR ref (fetched below), so --depth 1 --single-branch is sufficient and
+  # dramatically faster than a full clone.
+  gh repo clone "$FULL_REPO" "$REVIEW_DIR" -- --depth 1 --single-branch
   cd "$REVIEW_DIR"
 fi
 
 gh auth setup-git 2>/dev/null || true
 
-git fetch origin "pull/$PR_NUMBER/head:pr-$PR_NUMBER" 2>/dev/null || true
+# Fetch the PR ref at depth 1; fall back to full fetch for robustness.
+git fetch origin "pull/$PR_NUMBER/head:pr-$PR_NUMBER" --depth 1 2>/dev/null \
+  || git fetch origin "pull/$PR_NUMBER/head:pr-$PR_NUMBER" 2>/dev/null || true
 git checkout "pr-$PR_NUMBER" 2>/dev/null || true
-
-log "Gathering CI logs"
-mkdir -p /workspace/ci-logs
-gh run view "$RUN_ID" --log > /workspace/ci-logs/run.log 2>>"$ERRORS_FILE" || true
-gh run view "$RUN_ID" --json jobs \
-  --jq '.jobs[] | {name, conclusion, steps: [.steps[] | {name, conclusion}]}' \
-  > /workspace/ci-logs/summary.json 2>>"$ERRORS_FILE" || true
 
 if [ -f "$REVIEW_DIR/.linear.toml" ]; then
   cp "$REVIEW_DIR/.linear.toml" /workspace/.linear.toml
 fi
 
-log "Gathering PR context"
-LINEAR_ISSUE_ID=$(gh pr view "$PR_NUMBER" --json body,labels --jq '
-  ((.body // "") | capture("LIN-(?<n>[0-9]+)") // null) //
-  ((.labels // [])[].name | capture("linear/(?<n>[0-9]+)") // null)
-' 2>/dev/null || echo "")
+# Gather CI logs and PR context in parallel — these are independent network
+# calls that together account for several seconds of wall time when run
+# sequentially.
+log "Gathering CI logs and PR context"
+mkdir -p /workspace/ci-logs
 
-if [ -n "$LINEAR_ISSUE_ID" ]; then
-  linear issue view "LIN-$LINEAR_ISSUE_ID" --json > /workspace/linear-context.json 2>>"$ERRORS_FILE" || true
-fi
-
+gh run view "$RUN_ID" --log > /workspace/ci-logs/run.log 2>>"$ERRORS_FILE" &
+gh run view "$RUN_ID" --json jobs \
+  --jq '.jobs[] | {name, conclusion, steps: [.steps[] | {name, conclusion}]}' \
+  > /workspace/ci-logs/summary.json 2>>"$ERRORS_FILE" &
 gh pr view "$PR_NUMBER" --json \
   title,body,author,comments,reviews,labels,additions,deletions,changedFiles,baseRefName,headRefName \
-  > /workspace/pr-context.json 2>>"$ERRORS_FILE" || true
-
-gh pr diff "$PR_NUMBER" > /workspace/pr.diff 2>>"$ERRORS_FILE" || true
+  > /workspace/pr-context.json 2>>"$ERRORS_FILE" &
+gh pr diff "$PR_NUMBER" > /workspace/pr.diff 2>>"$ERRORS_FILE" &
+wait || true
 
 if [ ! -s /workspace/pr.diff ]; then
   echo "Error: pr.diff is empty — gh pr diff may have failed (check /workspace/errors.log)" >> "$ERRORS_FILE"
+fi
+
+# Extract the Linear issue ID from the PR context we already fetched (avoids
+# a second `gh pr view` round-trip). The capture returns {"n":"96"}, so we
+# pull .n to get the bare number.
+LINEAR_ISSUE_ID=$(jq -r '
+  (((.body // "") | capture("LIN-(?<n>[0-9]+)") | .n) // null) //
+  (((.labels // [])[].name | capture("linear/(?<n>[0-9]+)") | .n) // null) //
+  ""
+' /workspace/pr-context.json 2>/dev/null || echo "")
+
+if [ -n "$LINEAR_ISSUE_ID" ]; then
+  log "Fetching Linear issue LIN-$LINEAR_ISSUE_ID"
+  linear issue view "LIN-$LINEAR_ISSUE_ID" --json > /workspace/linear-context.json 2>>"$ERRORS_FILE" || true
 fi
 
 cat > /workspace/review-prompt.md <<PROMPT
@@ -102,14 +132,16 @@ Review PR #${PR_NUMBER} on ${FULL_REPO}.
 Base: ${BASE_BRANCH} → Head: ${HEAD_BRANCH}
 Commit: ${SHA}
 
-Context files available in /workspace:
+Context files available in /workspace (pre-gathered — read these instead of
+calling \`gh\` again):
 - pr-context.json — PR title, body, comments, reviews, labels, stats
 - pr.diff         — Full diff of all changes
 - ci-logs/        — CI run log and per-job summary
 - linear-context.json — Associated Linear issue (if any)
 - errors.log      — Any errors encountered while gathering context
 
-The repo is cloned at ${REVIEW_DIR}.
+The repo is cloned at ${REVIEW_DIR}. \`jq\` is available for JSON parsing;
+\`python3\` is NOT installed. \`ripgrep\` (\`rg\`) is available for search.
 
 Read /workspace/REVIEW_AGENT.md for your instructions.
 PROMPT
@@ -119,10 +151,14 @@ if [ -f .review-agent/prompt.md ]; then
 fi
 
 cd "$WORKSPACE"
+OPENCODE_START=$(date +%s)
 log "Running opencode review"
 OPENCODE_DANGEROUSLY_SKIP_PERMISSIONS=true \
 opencode run "$(cat /workspace/review-prompt.md)" --dir "$WORKSPACE" \
   --variant "${OPENCODE_VARIANT:-max}" \
-  2>&1 | tee -a "$LOG_FILE" || true
+  2>&1 | ts_lines | tee -a "$LOG_FILE" || true
 
-log "Review agent complete."
+OPENCODE_END=$(date +%s)
+OPENCODE_SECS=$((OPENCODE_END - OPENCODE_START))
+TOTAL_SECS=$((OPENCODE_END - START_TIME))
+log "Review agent complete (opencode: ${OPENCODE_SECS}s, total: ${TOTAL_SECS}s)."
