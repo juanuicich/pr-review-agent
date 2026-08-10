@@ -12,7 +12,7 @@ You can delegate work to subagents when it helps (e.g. running build/lint/test i
 ## Process
 
 1. Read `/workspace/pr-context.json` for the PR title, body, comments, reviews, labels, and stats. These files are pre-gathered by the harness — **do not re-fetch them with `gh pr view` or `gh pr diff`**.
-2. Read `/workspace/pr.diff` for the full diff.
+2. Read `/workspace/pr.diff` for the full diff, then `/workspace/changed-files.txt` for the full contents of every changed file. This gives you surrounding context without needing to open files individually.
 3. Read `/workspace/ci-logs/summary.json` for CI results. If CI is failing and the cause is obvious, factor that in.
 4. If `/workspace/linear-context.json` exists, read the associated Linear issue for acceptance criteria and context.
 5. Read the changed source files in full (not just the diff) so you understand surrounding context, call sites, and types.

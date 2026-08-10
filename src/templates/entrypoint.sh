@@ -92,15 +92,50 @@ if [ -f "$REVIEW_DIR/.linear.toml" ]; then
   cp "$REVIEW_DIR/.linear.toml" /workspace/.linear.toml
 fi
 
-# Gather CI logs and PR context in parallel — these are independent network
-# calls that together account for several seconds of wall time when run
-# sequentially.
+# Phase 2 setup: install project deps in the cloned repo. Phase 1 (toolchain
+# install) already ran in the worker and is cached in the R2 backup. Here we
+# run setup.sh again inside the repo so deps.get / npm install / etc. can find
+# the project files, then cache the result keyed on lockfile hash.
+if [ -f /workspace/setup.sh ]; then
+  PHASE2_INPUTS="/workspace/setup.sh"
+  for f in mix.lock package-lock.json yarn.lock Cargo.lock poetry.lock go.sum requirements.txt; do
+    [ -f "$REVIEW_DIR/$f" ] && PHASE2_INPUTS="$PHASE2_INPUTS $REVIEW_DIR/$f"
+  done
+  PHASE2_HASH=$(cat $PHASE2_INPUTS 2>/dev/null | sha256sum | cut -d' ' -f1)
+  CACHE_URL="${REVIEW_WORKER_URL}/deps-cache?owner=${OWNER}&repo=${REPO}&hash=${PHASE2_HASH}"
+
+  if curl -sf -o /tmp/deps-cache.tar.gz -H "Authorization: Bearer ${REVIEW_WORKER_TOKEN}" "$CACHE_URL" 2>/dev/null; then
+    log "Restoring cached deps (hash ${PHASE2_HASH:0:12})"
+    tar xzf /tmp/deps-cache.tar.gz -C "$REVIEW_DIR" 2>/dev/null || true
+    rm -f /tmp/deps-cache.tar.gz
+  else
+    log "Installing project deps (Phase 2 setup)"
+    (cd "$REVIEW_DIR" && MISE_DATA_DIR="/workspace/.mise" bash /workspace/setup.sh) >> "$LOG_FILE" 2>&1 || true
+
+    ARTIFACT_DIRS=""
+    for d in deps _build node_modules target .venv; do
+      [ -d "$REVIEW_DIR/$d" ] && ARTIFACT_DIRS="$ARTIFACT_DIRS $d"
+    done
+    if [ -n "$ARTIFACT_DIRS" ]; then
+      log "Caching deps for future reviews"
+      tar czf /tmp/deps-cache.tar.gz -C "$REVIEW_DIR" $ARTIFACT_DIRS 2>/dev/null || true
+      curl -sf -X PUT "$CACHE_URL" \
+        -H "Authorization: Bearer ${REVIEW_WORKER_TOKEN}" \
+        -H "Content-Type: application/gzip" \
+        --data-binary @/tmp/deps-cache.tar.gz >/dev/null 2>&1 || true
+      rm -f /tmp/deps-cache.tar.gz
+    fi
+  fi
+fi
+
+# Gather CI summary + PR context in parallel, then conditionally fetch the
+# full CI log only when CI is not green (saves time + bandwidth on green runs
+# and handles the case where CI is still running).
 log "Gathering CI logs and PR context"
 mkdir -p /workspace/ci-logs
 
-gh run view "$RUN_ID" --log > /workspace/ci-logs/run.log 2>>"$ERRORS_FILE" &
 gh run view "$RUN_ID" --json jobs \
-  --jq '.jobs[] | {name, conclusion, steps: [.steps[] | {name, conclusion}]}' \
+  --jq '.jobs[] | {name, conclusion, status, steps: [.steps[] | {name, conclusion}]}' \
   > /workspace/ci-logs/summary.json 2>>"$ERRORS_FILE" &
 gh pr view "$PR_NUMBER" --json \
   title,body,author,comments,reviews,labels,additions,deletions,changedFiles,baseRefName,headRefName \
@@ -108,8 +143,50 @@ gh pr view "$PR_NUMBER" --json \
 gh pr diff "$PR_NUMBER" > /workspace/pr.diff 2>>"$ERRORS_FILE" &
 wait || true
 
+# Only fetch the full CI log when useful — skip on green or still-running CI.
+CI_STATE=$(jq -rs '
+  map(select(.name != "ai-review")) |
+  if length == 0 then "unknown"
+  elif any(.conclusion == null) then "running"
+  elif all(.conclusion == "success") then "green"
+  else "failed"
+  end
+' /workspace/ci-logs/summary.json 2>/dev/null || echo "unknown")
+
+case "$CI_STATE" in
+  green)
+    log "CI is green, skipping full log fetch"
+    echo "CI passed. See ci-logs/summary.json for step results." > /workspace/ci-logs/run.log
+    ;;
+  running)
+    log "CI still in progress, skipping full log fetch"
+    echo "CI was still running when the review started. See ci-logs/summary.json for partial results." > /workspace/ci-logs/run.log
+    ;;
+  *)
+    log "CI state: $CI_STATE, fetching full log"
+    gh run view "$RUN_ID" --log > /workspace/ci-logs/run.log 2>>"$ERRORS_FILE" || true
+    ;;
+esac
+
 if [ ! -s /workspace/pr.diff ]; then
   echo "Error: pr.diff is empty — gh pr diff may have failed (check /workspace/errors.log)" >> "$ERRORS_FILE"
+fi
+
+# Pre-gather full contents of changed files so the agent doesn't waste turns
+# reading each file individually.
+CHANGED_FILES=$(grep '^diff --git' /workspace/pr.diff 2>/dev/null | sed 's/^diff --git a\///; s/ b\/.*//' | grep -v '^/dev/null' || true)
+if [ -n "$CHANGED_FILES" ]; then
+  {
+    for f in $CHANGED_FILES; do
+      if [ -f "$REVIEW_DIR/$f" ]; then
+        echo "=== $f ==="
+        cat "$REVIEW_DIR/$f"
+        echo ""
+      fi
+    done
+  } > /workspace/changed-files.txt
+  CHANGED_COUNT=$(echo "$CHANGED_FILES" | wc -l | tr -d ' ')
+  log "Pre-gathered $CHANGED_COUNT changed file(s)"
 fi
 
 # Extract the Linear issue ID from the PR context we already fetched (avoids
@@ -136,6 +213,8 @@ Context files available in /workspace (pre-gathered — read these instead of
 calling \`gh\` again):
 - pr-context.json — PR title, body, comments, reviews, labels, stats
 - pr.diff         — Full diff of all changes
+- changed-files.txt — Full contents of every changed file (read this instead
+                      of opening files individually)
 - ci-logs/        — CI run log and per-job summary
 - linear-context.json — Associated Linear issue (if any)
 - errors.log      — Any errors encountered while gathering context

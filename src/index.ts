@@ -602,6 +602,53 @@ async function handleScheduled(event: ScheduledEvent, env: Env): Promise<void> {
   }
 }
 
+async function handleDepsCacheGet(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const owner = url.searchParams.get("owner");
+  const repo = url.searchParams.get("repo");
+  const hash = url.searchParams.get("hash");
+  if (!owner || !repo || !hash) {
+    return new Response("Missing required fields: owner, repo, hash", {
+      status: 400,
+      headers: { "Content-Type": "text/plain" },
+    });
+  }
+  const key = `deps-cache:${owner}:${repo}:${hash}`;
+  const obj = await env.BACKUP_BUCKET.get(key);
+  if (obj === null) {
+    return new Response("Not found", { status: 404 });
+  }
+  return new Response(obj.body, {
+    headers: { "Content-Type": "application/gzip", "Cache-Control": "no-store" },
+  });
+}
+
+async function handleDepsCachePut(request: Request, env: Env): Promise<Response> {
+  if (!validateAuth(request, env.AUTH_TOKEN)) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const url = new URL(request.url);
+  const owner = url.searchParams.get("owner");
+  const repo = url.searchParams.get("repo");
+  const hash = url.searchParams.get("hash");
+  if (!owner || !repo || !hash) {
+    return new Response(
+      JSON.stringify({ error: "Missing required fields: owner, repo, hash" }),
+      { status: 400, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  const key = `deps-cache:${owner}:${repo}:${hash}`;
+  await env.BACKUP_BUCKET.put(key, request.body, {
+    customMetadata: { owner, repo, createdAt: new Date().toISOString() },
+  });
+  return new Response(JSON.stringify({ status: "ok" }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 export default {
   async fetch(
     request: Request,
@@ -624,6 +671,14 @@ export default {
 
     if (url.pathname === "/logs" && request.method === "POST") {
       return handleLogs(request, env);
+    }
+
+    if (url.pathname === "/deps-cache" && request.method === "GET") {
+      return handleDepsCacheGet(request, env);
+    }
+
+    if (url.pathname === "/deps-cache" && request.method === "PUT") {
+      return handleDepsCachePut(request, env);
     }
 
     return new Response("Not Found", { status: 404 });
