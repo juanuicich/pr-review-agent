@@ -494,9 +494,14 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
     createCheckRun(ghToken, owner, repo, sha, logUrl),
   ]);
 
-  // Cache setup output in R2 (keyed on a hash of setup.sh + prompt.md) so we
-  // don't re-run slow setup (e.g. building toolchains) on every review.
-  const setupHash = await hashContent((setupScript ?? "") + (promptMd ?? ""));
+  // Cache setup output in R2, keyed on a hash of setup.sh, so we don't re-run
+  // slow setup (e.g. building toolchains) on every review.
+  //
+  // prompt.md used to be hashed in here too, even though it has no bearing on
+  // the environment: editing a single line of review instructions threw away
+  // the snapshot and rebuilt the whole toolchain from source. For a repo with
+  // no prompt.md the key is unchanged, since the old expression appended "".
+  const setupHash = await hashContent(setupScript ?? "");
   const backupKey = `backup:${owner}:${repo}:${setupHash}`;
   const existingBackup = await env.KV.get(backupKey);
   let restored = false;
