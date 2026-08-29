@@ -193,9 +193,15 @@ async function hashContent(content: string): Promise<string> {
 const CHECK_RUN_NAME = "AI Review";
 
 // Nothing else bounds how long a container lives: keepAlive is set on every
-// sandbox, so sleepAfter never fires. Comfortably above the 30 minute review
-// timeout, so this only ever catches sandboxes that already lost their review.
-const SANDBOX_MAX_LIFETIME_MS = 45 * 60 * 1000;
+// sandbox, so sleepAfter never fires. This covers provisioning as well as the
+// review, and a cold toolchain build has taken over an hour, so the ceiling
+// sits well clear of that -- it only ever catches genuine orphans.
+const SANDBOX_MAX_LIFETIME_MS = 2 * 60 * 60 * 1000;
+
+// A cold `mise install` of a language toolchain builds from source and can run
+// for the better part of an hour. At the old five minute cap the setup step was
+// killed halfway and its half-built workspace was then saved as the backup.
+const SETUP_TIMEOUT_MS = 45 * 60 * 1000;
 
 // A sandbox can only be destroyed by name, and the review record that holds
 // that name is keyed per PR -- so a second review round for the same PR used to
@@ -426,6 +432,14 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
     keepAlive: true,
   });
   const sandboxId = `${kvKey}:${run_id}`;
+  const provisionStart = new Date().toISOString();
+  // Before any provisioning work: a container that exists but is not yet
+  // tracked cannot be reaped if this request dies partway through.
+  await env.KV.put(
+    `sandbox:${sandboxId}`,
+    JSON.stringify({ sandboxId, startedAt: provisionStart } as TrackedSandbox),
+    { expirationTtl: 7 * 24 * 60 * 60 },
+  );
 
   const ghToken = await getInstallationToken(env);
 
@@ -454,7 +468,11 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
   const backupKey = `backup:${owner}:${repo}:${setupHash}`;
   const existingBackup = await env.KV.get(backupKey);
   let restored = false;
+  let restoreMs = 0;
+  let setupMs = 0;
+  let backupMs = 0;
   if (existingBackup) {
+    const started = Date.now();
     try {
       // Backups are created against the local R2 binding; make sure restore
       // takes the same path (otherwise it tries presigned URLs -> undefined).
@@ -468,10 +486,14 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
       console.error("restoreBackup failed, will re-run setup:", e);
       await env.KV.delete(backupKey);
     }
+    restoreMs = Date.now() - started;
   }
   if (!restored && setupScript) {
+    const started = Date.now();
     await sandbox.writeFile("/workspace/setup.sh", setupScript);
-    await sandbox.exec("bash /workspace/setup.sh", { timeout: 300_000 });
+    await sandbox.exec("bash /workspace/setup.sh", { timeout: SETUP_TIMEOUT_MS });
+    setupMs = Date.now() - started;
+    const backupStarted = Date.now();
     try {
       const backup = await sandbox.createBackup({
         dir: "/workspace",
@@ -482,6 +504,7 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
     } catch (e) {
       console.error("createBackup failed (review will still proceed):", e);
     }
+    backupMs = Date.now() - backupStarted;
   }
 
   await Promise.all([
@@ -502,9 +525,18 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
     checkRunId: checkRunId ?? undefined,
   };
   await env.KV.put(kvKey, JSON.stringify(review));
+
+  const timings = {
+    restored,
+    restoreMs,
+    setupMs,
+    backupMs,
+    provisionMs: Date.now() - Date.parse(provisionStart),
+  };
+  console.log(`[${owner}/${repo}#${pr_number}] provisioning ${JSON.stringify(timings)}`);
   await env.KV.put(
-    `sandbox:${sandboxId}`,
-    JSON.stringify({ sandboxId, startedAt: review.startedAt } as TrackedSandbox),
+    `timing:${owner}:${repo}:${pr_number}:${run_id}`,
+    JSON.stringify({ ...timings, at: provisionStart }),
     { expirationTtl: 7 * 24 * 60 * 60 },
   );
 
@@ -700,7 +732,6 @@ async function handleCleanup(
   // cron sweep, so it has to land before anything can cut the request short.
   try {
     await env.KV.delete(kvKey);
-    if (existing?.sandboxId) await env.KV.delete(`sandbox:${existing.sandboxId}`);
   } catch (e) {
     console.error(`KV delete failed for ${kvKey}:`, e);
   }
