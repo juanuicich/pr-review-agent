@@ -103,34 +103,49 @@ async function signJWT(appId: string, privateKeyPem: string): Promise<string> {
   return `${signingInput}.${encodedSignature}`;
 }
 
-async function getInstallationToken(env: Env): Promise<string> {
+// The installation id used to be cached under one global key and read from
+// `installations[0]`, which only holds while the App is installed on a single
+// account. Add a second account and whichever installation the API happens to
+// list first wins for seven days, so the other account's reviews are signed
+// with a token that cannot see the repo. Resolve the installation from the
+// repository itself and cache it per owner.
+async function getInstallationToken(
+  env: Env,
+  owner: string,
+  repo: string,
+): Promise<string> {
   if (!env.GITHUB_APP_ID || !env.GITHUB_APP_PRIVATE_KEY) {
     return env.GH_TOKEN;
   }
 
-  const cacheKey = "github:app:installation_id";
+  const cacheKey = `github:app:installation:${owner}`;
   let installationId = await env.KV.get(cacheKey);
 
   const jwt = await signJWT(env.GITHUB_APP_ID, env.GITHUB_APP_PRIVATE_KEY);
 
   if (!installationId) {
-    const resp = await fetch("https://api.github.com/app/installations", {
-      headers: {
-        Authorization: `Bearer ${jwt}`,
-        Accept: "application/vnd.github.v3+json",
-        "User-Agent": "pr-review-agent",
+    const resp = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/installation`,
+      {
+        headers: {
+          Authorization: `Bearer ${jwt}`,
+          Accept: "application/vnd.github.v3+json",
+          "User-Agent": "pr-review-agent",
+        },
       },
-    });
+    );
     if (!resp.ok) {
-      console.error(`Failed to list installations: ${resp.status}`);
+      console.error(
+        `Failed to resolve installation for ${owner}/${repo}: ${resp.status}`,
+      );
       return env.GH_TOKEN;
     }
-    const installations = (await resp.json()) as { id: number }[];
-    if (installations.length === 0) {
-      console.error("No app installations found");
+    const installation = (await resp.json()) as { id?: number };
+    if (!installation.id) {
+      console.error(`App is not installed on ${owner}/${repo}`);
       return env.GH_TOKEN;
     }
-    installationId = String(installations[0].id);
+    installationId = String(installation.id);
     await env.KV.put(cacheKey, installationId, { expirationTtl: 7 * 24 * 60 * 60 });
   }
 
@@ -458,7 +473,7 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
     { expirationTtl: 7 * 24 * 60 * 60 },
   );
 
-  const ghToken = await getInstallationToken(env);
+  const ghToken = await getInstallationToken(env, owner, repo);
 
   // Kick off independent operations in parallel: setting sandbox env vars,
   // fetching repo config files, and creating the check run are all
@@ -651,7 +666,7 @@ async function handleLogs(request: Request, env: Env): Promise<Response> {
       console.error(`KV read failed for ${kvKey}:`, e);
     }
 
-    const ghToken = await getInstallationToken(env);
+    const ghToken = await getInstallationToken(env, owner, repo);
     const sha =
       reportedSha ?? existing?.sha ?? (await getPrHeadSha(ghToken, owner, repo, prNumber));
 
@@ -817,7 +832,7 @@ async function handleScheduled(event: ScheduledEvent, env: Env): Promise<void> {
         // really is unfinished -- a record that outlived its cleanup must not
         // overwrite a check run that already reported a result.
         if (review.checkRunId) {
-          const ghToken = await getInstallationToken(env);
+          const ghToken = await getInstallationToken(env, review.owner, review.repo);
           if (await isCheckRunOpen(ghToken, review.owner, review.repo, review.checkRunId)) {
             await updateCheckRun(ghToken, review.owner, review.repo, review.checkRunId, {
               status: "completed",
@@ -866,6 +881,10 @@ async function handleScheduled(event: ScheduledEvent, env: Env): Promise<void> {
 }
 
 async function handleDepsCacheGet(request: Request, env: Env): Promise<Response> {
+  if (!validateAuth(request, env.AUTH_TOKEN)) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
   const url = new URL(request.url);
   const owner = url.searchParams.get("owner");
   const repo = url.searchParams.get("repo");
