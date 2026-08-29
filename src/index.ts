@@ -218,6 +218,8 @@ const SANDBOX_MAX_LIFETIME_MS = 2 * 60 * 60 * 1000;
 // killed halfway and its half-built workspace was then saved as the backup.
 const SETUP_TIMEOUT_MS = 45 * 60 * 1000;
 
+const BACKUP_TTL_SECONDS = 30 * 24 * 60 * 60;
+
 // A sandbox can only be destroyed by name, and the review record that holds
 // that name is keyed per PR -- so a second review round for the same PR used to
 // overwrite the first run's id and strand its container running forever. This
@@ -520,6 +522,10 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
       const backup = await sandbox.createBackup({
         dir: "/workspace",
         localBucket: true,
+        // Default is 3 days, after which restore throws BackupExpiredError and
+        // the toolchain is rebuilt from source. The inputs are hashed into the
+        // key, so a stale snapshot is replaced on content change, not on age.
+        ttl: BACKUP_TTL_SECONDS,
       });
       // Concurrent reviews each provision independently, and only one snapshot
       // can be referenced. If another finished first, drop ours rather than

@@ -55,5 +55,11 @@
   // - LLM_API_KEY (API key for the selected model provider)
   // - OPENCODE_MODEL (provider/model format, e.g. anthropic/claude-sonnet-4-6)
   // - REVIEW_WORKER_URL (deployed worker URL, e.g. https://pr-review-agent.<account>.workers.dev)
-  "vars": {}
+  "vars": {
+    // The sandbox DO reads this. On the default "http" transport, restoring a
+    // backup base64-encodes the whole archive in DO memory (~148MB for a
+    // 106MiB snapshot, against a 128MB limit) and the container receives
+    // undefined, so every review rebuilds its toolchain. "rpc" streams it.
+    "SANDBOX_TRANSPORT": "rpc"
+  }
 }
