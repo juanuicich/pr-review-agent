@@ -153,6 +153,21 @@ async function getInstallationToken(env: Env): Promise<string> {
   return tokenData.token;
 }
 
+// createBackup writes backups/<id>/{data.sqsh,meta.json} and the SDK offers no
+// way to remove them. Nothing ever did, so every replaced snapshot stayed in R2
+// forever: 137 orphans totalling 14.2GB had accumulated since May.
+async function deleteBackupObjects(env: Env, id: string): Promise<void> {
+  try {
+    await Promise.all([
+      env.BACKUP_BUCKET.delete(`backups/${id}/data.sqsh`),
+      env.BACKUP_BUCKET.delete(`backups/${id}/meta.json`),
+    ]);
+    console.log(`Deleted superseded backup ${id}`);
+  } catch (e) {
+    console.error(`Failed to delete backup ${id}:`, e);
+  }
+}
+
 async function fetchGitHubFile(
   ghToken: string,
   fullRepo: string,
@@ -471,8 +486,12 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
   let restoreMs = 0;
   let setupMs = 0;
   let backupMs = 0;
+  let restoreError: string | null = null;
+  // Held so the old snapshot can be removed once a replacement is stored.
+  let supersededId: string | null = null;
   if (existingBackup) {
     const started = Date.now();
+    supersededId = (JSON.parse(existingBackup) as DirectoryBackup).id ?? null;
     try {
       // Backups are created against the local R2 binding; make sure restore
       // takes the same path (otherwise it tries presigned URLs -> undefined).
@@ -483,6 +502,9 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
       restored = true;
       console.log(`Restored setup backup for ${owner}/${repo}`);
     } catch (e) {
+      // Recorded rather than only logged: reading Worker logs needs a token
+      // this deployment path cannot mint, and this is the root cause to chase.
+      restoreError = String(e).slice(0, 300);
       console.error("restoreBackup failed, will re-run setup:", e);
       await env.KV.delete(backupKey);
     }
@@ -499,8 +521,19 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
         dir: "/workspace",
         localBucket: true,
       });
-      await env.KV.put(backupKey, JSON.stringify(backup));
-      console.log(`Stored setup backup for ${owner}/${repo}`);
+      // Concurrent reviews each provision independently, and only one snapshot
+      // can be referenced. If another finished first, drop ours rather than
+      // orphaning theirs -- that race left five 106MiB snapshots in four
+      // seconds during the last batch.
+      if (await env.KV.get(backupKey)) {
+        ctx.waitUntil(deleteBackupObjects(env, backup.id));
+      } else {
+        await env.KV.put(backupKey, JSON.stringify(backup));
+        console.log(`Stored setup backup for ${owner}/${repo}`);
+        if (supersededId && supersededId !== backup.id) {
+          ctx.waitUntil(deleteBackupObjects(env, supersededId));
+        }
+      }
     } catch (e) {
       console.error("createBackup failed (review will still proceed):", e);
     }
@@ -528,6 +561,7 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
 
   const timings = {
     restored,
+    restoreError,
     restoreMs,
     setupMs,
     backupMs,
