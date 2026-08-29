@@ -638,7 +638,11 @@ async function handleGetLogs(request: Request, env: Env): Promise<Response> {
   });
 }
 
-async function handleCleanup(request: Request, env: Env): Promise<Response> {
+async function handleCleanup(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
   if (!validateAuth(request, env.AUTH_TOKEN)) {
     return new Response("Unauthorized", { status: 401 });
   }
@@ -674,23 +678,24 @@ async function handleCleanup(request: Request, env: Env): Promise<Response> {
     });
   }
 
-  // Deleting the record is what stops the cron sweep from later reporting a
-  // timeout for this review, so it happens even if the teardown fails.
+  // Order matters. This request comes from inside the sandbox we are about to
+  // destroy, so the teardown severs the caller's connection and the runtime
+  // cancels the rest of the invocation. Deleting the record is what disarms the
+  // cron sweep, so it has to land before anything can cut the request short.
   try {
-    if (existing && existing.runId) {
-      const sandbox = getSandbox(
-        env.Sandbox,
-        `pr:${owner}:${repo}:${pr_number}:${existing.runId}`,
-        { keepAlive: true },
-      );
-      await sandbox.destroy().catch(() => {});
-    }
+    await env.KV.delete(kvKey);
   } catch (e) {
-    console.error(`Sandbox teardown failed for ${kvKey}:`, e);
-  } finally {
-    await env.KV
-      .delete(kvKey)
-      .catch((e) => console.error(`KV delete failed for ${kvKey}:`, e));
+    console.error(`KV delete failed for ${kvKey}:`, e);
+  }
+
+  if (existing && existing.runId) {
+    const sandbox = getSandbox(
+      env.Sandbox,
+      `pr:${owner}:${repo}:${pr_number}:${existing.runId}`,
+      { keepAlive: true },
+    );
+    // waitUntil so the teardown still completes once it drops its own caller.
+    ctx.waitUntil(sandbox.destroy().catch(() => {}));
   }
 
   return new Response(JSON.stringify({ status: "cleaned" }), {
@@ -809,7 +814,7 @@ export default {
     }
 
     if (url.pathname === "/cleanup" && request.method === "POST") {
-      return handleCleanup(request, env);
+      return handleCleanup(request, env, ctx);
     }
 
     if (url.pathname === "/logs" && request.method === "GET") {
