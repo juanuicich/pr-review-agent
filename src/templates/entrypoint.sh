@@ -53,11 +53,15 @@ on_exit() {
   if [ "$ec" -ne 0 ]; then
     echo -e "\n[entrypoint] Aborted with exit code $ec." >> "$LOG_FILE"
   fi
-  curl -sf -X POST "${REVIEW_WORKER_URL}/logs?owner=${OWNER}&repo=${REPO}&pr_number=${PR_NUMBER}&exit=${ec}" \
+  # Bounded: without --max-time a stalled worker response would strand the
+  # cleanup call below, and the review would be swept as a timeout.
+  curl -sf --connect-timeout 15 --max-time 120 \
+    -X POST "${REVIEW_WORKER_URL}/logs?owner=${OWNER}&repo=${REPO}&pr_number=${PR_NUMBER}&sha=${SHA}&exit=${ec}" \
     -H "Authorization: Bearer ${REVIEW_WORKER_TOKEN}" \
     -H "Content-Type: text/plain" \
     --data-binary @"$LOG_FILE" >/dev/null 2>&1 || true
-  curl -sf -X POST "${REVIEW_WORKER_URL}/cleanup" \
+  curl -sf --connect-timeout 15 --max-time 60 \
+    -X POST "${REVIEW_WORKER_URL}/cleanup" \
     -H "Authorization: Bearer ${REVIEW_WORKER_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "{\"owner\": \"${OWNER}\", \"repo\": \"${REPO}\", \"pr_number\": ${PR_NUMBER}, \"sha\": \"${SHA}\"}" \

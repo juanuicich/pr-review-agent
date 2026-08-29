@@ -190,6 +190,8 @@ async function hashContent(content: string): Promise<string> {
     .join("");
 }
 
+const CHECK_RUN_NAME = "AI Review";
+
 const GH_HEADERS = (token: string) => ({
   Authorization: `Bearer ${token}`,
   Accept: "application/vnd.github.v3+json",
@@ -210,7 +212,7 @@ async function createCheckRun(
         method: "POST",
         headers: GH_HEADERS(ghToken),
         body: JSON.stringify({
-          name: "AI Review",
+          name: CHECK_RUN_NAME,
           head_sha: sha,
           status: "in_progress",
           started_at: new Date().toISOString(),
@@ -239,21 +241,108 @@ async function updateCheckRun(
   repo: string,
   checkRunId: number,
   params: Record<string, unknown>,
-): Promise<void> {
+): Promise<boolean> {
+  // This PATCH is the only thing that moves a check run out of "in_progress".
+  // When it failed silently the PR sat pending until the cron sweep stamped a
+  // timeout on a review that had in fact finished, so it retries and reports.
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const resp = await fetch(
+        `https://api.github.com/repos/${owner}/${repo}/check-runs/${checkRunId}`,
+        {
+          method: "PATCH",
+          headers: GH_HEADERS(ghToken),
+          body: JSON.stringify(params),
+        },
+      );
+      if (resp.ok) return true;
+      console.error(
+        `updateCheckRun ${owner}/${repo} check ${checkRunId} attempt ${attempt} failed: ` +
+          `${resp.status} ${await resp.text()}`,
+      );
+      // A 4xx that is not throttling will not resolve itself.
+      if (resp.status < 500 && resp.status !== 403 && resp.status !== 429) return false;
+    } catch (e) {
+      console.error(
+        `updateCheckRun ${owner}/${repo} check ${checkRunId} attempt ${attempt} error:`,
+        e,
+      );
+    }
+    if (attempt < 3) await new Promise((r) => setTimeout(r, 500 * attempt));
+  }
+  return false;
+}
+
+// The KV record is keyed per PR and only ever holds the newest run, so it
+// cannot be trusted to name the check run for the run that is reporting in.
+// Ask GitHub instead, using the sha that was actually reviewed.
+async function findCheckRunId(
+  ghToken: string,
+  owner: string,
+  repo: string,
+  sha: string,
+): Promise<number | null> {
+  try {
+    const resp = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/commits/${sha}/check-runs` +
+        `?check_name=${encodeURIComponent(CHECK_RUN_NAME)}&per_page=100`,
+      { headers: GH_HEADERS(ghToken) },
+    );
+    if (!resp.ok) {
+      console.error(`findCheckRunId failed: ${resp.status} ${await resp.text()}`);
+      return null;
+    }
+    const runs =
+      ((await resp.json()) as {
+        check_runs?: { id: number; status: string; started_at: string }[];
+      }).check_runs ?? [];
+    // Prefer one that is still open; otherwise the most recently started.
+    const open = runs.filter((r) => r.status !== "completed");
+    const [pick] = (open.length ? open : runs).sort((a, b) =>
+      (b.started_at ?? "").localeCompare(a.started_at ?? ""),
+    );
+    return pick?.id ?? null;
+  } catch (e) {
+    console.error("findCheckRunId error:", e);
+    return null;
+  }
+}
+
+async function getPrHeadSha(
+  ghToken: string,
+  owner: string,
+  repo: string,
+  prNumber: string,
+): Promise<string | null> {
+  try {
+    const resp = await fetch(
+      `https://api.github.com/repos/${owner}/${repo}/pulls/${prNumber}`,
+      { headers: GH_HEADERS(ghToken) },
+    );
+    if (!resp.ok) return null;
+    return ((await resp.json()) as { head?: { sha?: string } }).head?.sha ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Only reports false when GitHub confirms the run already reported a result.
+// Anything ambiguous stays "open" so a timeout is still surfaced.
+async function isCheckRunOpen(
+  ghToken: string,
+  owner: string,
+  repo: string,
+  checkRunId: number,
+): Promise<boolean> {
   try {
     const resp = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/check-runs/${checkRunId}`,
-      {
-        method: "PATCH",
-        headers: GH_HEADERS(ghToken),
-        body: JSON.stringify(params),
-      },
+      { headers: GH_HEADERS(ghToken) },
     );
-    if (!resp.ok) {
-      console.error(`updateCheckRun failed: ${resp.status} ${await resp.text()}`);
-    }
-  } catch (e) {
-    console.error("updateCheckRun error:", e);
+    if (!resp.ok) return true;
+    return ((await resp.json()) as { status?: string }).status !== "completed";
+  } catch {
+    return true;
   }
 }
 
@@ -458,28 +547,65 @@ async function handleLogs(request: Request, env: Env): Promise<Response> {
   console.log(`[${owner}/${repo}#${prNumber}] Review output:\n${tail}`);
 
   // Mark the check run as complete and attach the review output (full log viewable in the Checks tab).
+  // The log body is already stored by this point, so everything below is
+  // best-effort and must not throw: losing the check run here is what used to
+  // leave a finished review pending until the cron sweep called it a timeout.
   const kvKey = `pr:${owner}:${repo}:${prNumber}`;
-  const existing = (await env.KV.get(kvKey, "json")) as ActiveReview | null;
-  if (existing?.checkRunId) {
-    const exitCode = url.searchParams.get("exit");
-    const failed = exitCode !== null && exitCode !== "0";
+  const exitCode = url.searchParams.get("exit");
+  const failed = exitCode !== null && exitCode !== "0";
+  const reportedSha = url.searchParams.get("sha");
+
+  try {
+    let existing: ActiveReview | null = null;
+    try {
+      existing = (await env.KV.get(kvKey, "json")) as ActiveReview | null;
+    } catch (e) {
+      console.error(`KV read failed for ${kvKey}:`, e);
+    }
+
     const ghToken = await getInstallationToken(env);
-    const MAX = 65000;
-    const text = output.length > MAX
-      ? `\n...truncated...\n${output.slice(-MAX)}`
-      : output;
-    await updateCheckRun(ghToken, owner, repo, existing.checkRunId, {
-      status: "completed",
-      conclusion: failed ? "failure" : "success",
-      completed_at: new Date().toISOString(),
-      output: {
-        title: failed ? "Review failed" : "Review complete",
-        summary: failed
-          ? "The AI review agent did not finish successfully. See the attached output for details."
-          : "The AI review agent finished processing this PR. Full output is attached below.",
-        text,
-      },
-    });
+    const sha =
+      reportedSha ?? existing?.sha ?? (await getPrHeadSha(ghToken, owner, repo, prNumber));
+
+    // Take the cached id only when the record describes the run reporting in;
+    // otherwise (missing record, or one replaced by a newer run) ask GitHub.
+    let checkRunId: number | null =
+      existing?.checkRunId && (!sha || !existing.sha || existing.sha === sha)
+        ? existing.checkRunId
+        : null;
+    if (!checkRunId && sha) {
+      checkRunId = await findCheckRunId(ghToken, owner, repo, sha);
+    }
+
+    if (!checkRunId) {
+      console.error(
+        `No check run to close for ${owner}/${repo}#${prNumber} (sha ${sha ?? "unknown"})`,
+      );
+    } else {
+      const MAX = 65000;
+      const text = output.length > MAX
+        ? `\n...truncated...\n${output.slice(-MAX)}`
+        : output;
+      const closed = await updateCheckRun(ghToken, owner, repo, checkRunId, {
+        status: "completed",
+        conclusion: failed ? "failure" : "success",
+        completed_at: new Date().toISOString(),
+        output: {
+          title: failed ? "Review failed" : "Review complete",
+          summary: failed
+            ? "The AI review agent did not finish successfully. See the attached output for details."
+            : "The AI review agent finished processing this PR. Full output is attached below.",
+          text,
+        },
+      });
+      if (!closed) {
+        console.error(
+          `Could not close check run ${checkRunId} for ${owner}/${repo}#${prNumber}`,
+        );
+      }
+    }
+  } catch (e) {
+    console.error(`Check run completion failed for ${owner}/${repo}#${prNumber}:`, e);
   }
 
   return new Response(JSON.stringify({ status: "ok" }), {
@@ -533,7 +659,14 @@ async function handleCleanup(request: Request, env: Env): Promise<Response> {
   }
 
   const kvKey = `pr:${owner}:${repo}:${pr_number}`;
-  const existing = (await env.KV.get(kvKey, "json")) as ActiveReview | null;
+  let existing: ActiveReview | null = null;
+  try {
+    existing = (await env.KV.get(kvKey, "json")) as ActiveReview | null;
+  } catch (e) {
+    console.error(`KV read failed for ${kvKey}:`, e);
+  }
+
+  // A newer run for this PR owns the record now; it will clean up after itself.
   if (sha && existing && existing.sha !== sha) {
     return new Response(JSON.stringify({ status: "skipped" }), {
       status: 200,
@@ -541,16 +674,24 @@ async function handleCleanup(request: Request, env: Env): Promise<Response> {
     });
   }
 
-  if (existing && existing.runId) {
-    const sandbox = getSandbox(
-      env.Sandbox,
-      `pr:${owner}:${repo}:${pr_number}:${existing.runId}`,
-      { keepAlive: true },
-    );
-    await sandbox.destroy().catch(() => {});
+  // Deleting the record is what stops the cron sweep from later reporting a
+  // timeout for this review, so it happens even if the teardown fails.
+  try {
+    if (existing && existing.runId) {
+      const sandbox = getSandbox(
+        env.Sandbox,
+        `pr:${owner}:${repo}:${pr_number}:${existing.runId}`,
+        { keepAlive: true },
+      );
+      await sandbox.destroy().catch(() => {});
+    }
+  } catch (e) {
+    console.error(`Sandbox teardown failed for ${kvKey}:`, e);
+  } finally {
+    await env.KV
+      .delete(kvKey)
+      .catch((e) => console.error(`KV delete failed for ${kvKey}:`, e));
   }
-
-  await env.KV.delete(kvKey);
 
   return new Response(JSON.stringify({ status: "cleaned" }), {
     status: 200,
@@ -579,18 +720,24 @@ async function handleScheduled(event: ScheduledEvent, env: Env): Promise<void> {
         );
         await sandbox.destroy().catch(() => {});
 
-        // Surface the timeout in the PR checks UI.
+        // Surface the timeout in the PR checks UI, but only when the review
+        // really is unfinished -- a record that outlived its cleanup must not
+        // overwrite a check run that already reported a result.
         if (review.checkRunId) {
           const ghToken = await getInstallationToken(env);
-          await updateCheckRun(ghToken, review.owner, review.repo, review.checkRunId, {
-            status: "completed",
-            conclusion: "failure",
-            completed_at: new Date().toISOString(),
-            output: {
-              title: "Review timed out",
-              summary: "The AI review agent did not complete within 30 minutes.",
-            },
-          });
+          if (await isCheckRunOpen(ghToken, review.owner, review.repo, review.checkRunId)) {
+            await updateCheckRun(ghToken, review.owner, review.repo, review.checkRunId, {
+              status: "completed",
+              conclusion: "failure",
+              completed_at: new Date().toISOString(),
+              output: {
+                title: "Review timed out",
+                summary: "The AI review agent did not complete within 30 minutes.",
+              },
+            });
+          } else {
+            console.log(`Stale record for an already-reported check: ${key.name}`);
+          }
         }
 
         await env.KV.delete(key.name);
