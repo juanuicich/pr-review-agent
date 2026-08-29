@@ -192,6 +192,17 @@ async function hashContent(content: string): Promise<string> {
 
 const CHECK_RUN_NAME = "AI Review";
 
+// Nothing else bounds how long a container lives: keepAlive is set on every
+// sandbox, so sleepAfter never fires. Comfortably above the 30 minute review
+// timeout, so this only ever catches sandboxes that already lost their review.
+const SANDBOX_MAX_LIFETIME_MS = 45 * 60 * 1000;
+
+// A sandbox can only be destroyed by name, and the review record that holds
+// that name is keyed per PR -- so a second review round for the same PR used to
+// overwrite the first run's id and strand its container running forever. This
+// index records every sandbox on its own key so the sweep can always reap it.
+type TrackedSandbox = { sandboxId: string; startedAt: string };
+
 const GH_HEADERS = (token: string) => ({
   Authorization: `Bearer ${token}`,
   Accept: "application/vnd.github.v3+json",
@@ -491,6 +502,11 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
     checkRunId: checkRunId ?? undefined,
   };
   await env.KV.put(kvKey, JSON.stringify(review));
+  await env.KV.put(
+    `sandbox:${sandboxId}`,
+    JSON.stringify({ sandboxId, startedAt: review.startedAt } as TrackedSandbox),
+    { expirationTtl: 7 * 24 * 60 * 60 },
+  );
 
   await sandbox.startProcess(
     `bash /workspace/entrypoint.sh ${owner} ${repo} ${full_repo} ${pr_number} ${sha} ${run_id} ${base_branch} ${head_branch}`,
@@ -684,6 +700,7 @@ async function handleCleanup(
   // cron sweep, so it has to land before anything can cut the request short.
   try {
     await env.KV.delete(kvKey);
+    if (existing?.sandboxId) await env.KV.delete(`sandbox:${existing.sandboxId}`);
   } catch (e) {
     console.error(`KV delete failed for ${kvKey}:`, e);
   }
@@ -746,8 +763,31 @@ async function handleScheduled(event: ScheduledEvent, env: Env): Promise<void> {
         }
 
         await env.KV.delete(key.name);
+        await env.KV.delete(`sandbox:${review.sandboxId}`).catch(() => {});
         console.log(`Cleaned up stale review: ${key.name}`);
       }
+    } catch {
+      await env.KV.delete(key.name);
+    }
+  }
+
+  // Reap any container that outlived its review, including ones whose review
+  // record was replaced by a later run for the same PR and which nothing else
+  // can address. No sandbox is ever reused -- ids are per run -- so there is no
+  // warm instance to preserve here.
+  const sandboxes = await env.KV.list({ prefix: "sandbox:" });
+  for (const key of sandboxes.keys) {
+    const raw = await env.KV.get(key.name);
+    if (!raw) continue;
+
+    try {
+      const { sandboxId, startedAt } = JSON.parse(raw) as TrackedSandbox;
+      if (now - new Date(startedAt).getTime() <= SANDBOX_MAX_LIFETIME_MS) continue;
+
+      const sandbox = getSandbox(env.Sandbox, sandboxId, { keepAlive: true });
+      await sandbox.destroy().catch(() => {});
+      await env.KV.delete(key.name);
+      console.log(`Reaped sandbox past max lifetime: ${sandboxId}`);
     } catch {
       await env.KV.delete(key.name);
     }
