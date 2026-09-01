@@ -13,7 +13,7 @@ There is no local container. "The reviewer container" is a per-review Cloudflare
 1. Target repo's workflow calls the composite action (juanuicich/pr-review-agent-action), which POSTs `/review` with PR metadata (owner, repo, pr_number, sha, run_id, branches).
 2. The worker resolves a GitHub App installation token (per-owner, cached in KV 7 days; falls back to `GH_TOKEN` if the App is not set).
 3. It provisions sandbox `pr:<owner>:<repo>:<n>:<run_id>`, sets env vars (`GH_TOKEN`, `LINEAR_API_KEY`, `LLM_API_KEY`, `REVIEW_WORKER_URL`, `REVIEW_WORKER_TOKEN`, `MISE_DATA_DIR`), and creates the "AI Review" check run on the PR.
-4. It fetches the target repo's `.review-agent/setup.sh` and `.review-agent/prompt.md`, runs setup if there is no cached R2 backup (backup key is a hash of setup.sh alone), writes `/workspace/.opencode.json` (model + `{env:LLM_API_KEY}`), `REVIEW_AGENT.md`, and the entrypoint, then starts the entrypoint in the background.
+4. It fetches the target repo's `.review-agent/setup.sh` and `.review-agent/prompt.md` from the default branch, runs setup if there is no cached R2 backup (backup key is a hash of setup.sh alone), writes `/workspace/.opencode.json` (model + `{env:LLM_API_KEY}`), `REVIEW_AGENT.md` (immutable base prompt from `src/templates/default-review.md` with the repo prompt appended behind a `---` separator; a repo prompt extends, never replaces, the base), and the entrypoint, then starts the entrypoint in the background.
 5. The entrypoint (`src/templates/entrypoint.sh`) clones the PR shallowly, gathers `pr-context.json`, `pr.diff`, `changed-files.txt`, CI logs, and optional Linear context into `/workspace`, then runs `opencode run --auto`. The agent posts one review via the REST API, the entrypoint POSTs its log to `/logs`, closes the check run, and calls `/cleanup`, which destroys the sandbox.
 6. A cron (`*/10`) marks reviews older than 30 minutes as timed out and destroys sandboxes older than 2 hours.
 
@@ -21,7 +21,7 @@ There is no local container. "The reviewer container" is a per-review Cloudflare
 
 - `src/index.ts` — the worker. Routes: `POST /review`, `POST /cleanup`, `GET+POST /logs`, `GET+PUT /deps-cache`, plus `scheduled`. All POST/PUT routes require `Authorization: Bearer <AUTH_TOKEN>`; `GET /logs` is public (check-run links point at it).
 - `src/templates/entrypoint.sh` — sandbox entrypoint: context gathering and the `opencode` invocation.
-- `src/templates/default-review.md` — default review prompt. A target repo's `.review-agent/prompt.md` replaces it entirely.
+- `src/templates/default-review.md` — base review prompt, always included. A target repo's `.review-agent/prompt.md` (fetched from the default branch only, so a PR cannot inject instructions into its own review) is appended behind a `---` separator.
 - `wrangler.jsonc.example` — deploy template. CI fills in `CF_KV_NAMESPACE_ID` and `CF_R2_BUCKET_NAME` from repo variables. The local `wrangler.jsonc` and root `opencode.json` are gitignored scratch config.
 - `agent/` — local scratch, not part of the deployment.
 
