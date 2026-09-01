@@ -2,7 +2,7 @@
 
 AI-powered code review agent that runs on Cloudflare Workers. A GitHub Action triggers the worker, which spins up a sandboxed environment to clone the PR, gather context (CI logs, Linear issues, diff), and run code review via `opencode`. The agent decides whether to approve, request changes, comment, or skip review entirely.
 
-Supports any LLM provider that opencode supports (DeepSeek, Anthropic, OpenAI, Google, etc). Model selection is configured via an environment variable.
+Supports any LLM provider that opencode supports (DeepSeek, Anthropic, OpenAI, Google, etc). Model selection is the plain Worker var `OPENCODE_MODEL` in `wrangler.jsonc`; the default is `deepseek/deepseek-v4-flash`.
 
 ## Architecture
 
@@ -74,9 +74,22 @@ Paste the returned KV namespace ID and your chosen bucket name into the GitHub r
 |---|---|
 | `AUTH_TOKEN` | Generate one: `openssl rand -hex 32` |
 | `LINEAR_API_KEY` | [Linear Settings > API > Personal API Keys](https://linear.app/settings/account/security) |
-| `LLM_API_KEY` | Your LLM provider's dashboard (e.g. Anthropic, OpenAI, DeepSeek) |
-| `OPENCODE_MODEL` | Not a secret -- set via `wrangler secret put` or as a Worker var. Format: `provider/model` (e.g. `anthropic/claude-sonnet-4-6`) |
+| `LLM_API_KEY` | API key for the provider named in `OPENCODE_MODEL`. With the default model, that is [DeepSeek Platform > API keys](https://platform.deepseek.com/api_keys). |
 | `REVIEW_WORKER_URL` | Set after first deploy (e.g. `https://pr-review-agent.<account>.workers.dev`) |
+
+Model selection is **not** secret. It is a plain var in `wrangler.jsonc`:
+
+| Var | Description |
+|---|---|
+| `OPENCODE_MODEL` | Model in `provider/model` format, e.g. `deepseek/deepseek-v4-flash`. `LLM_API_KEY` must hold a key for the provider it names. |
+
+Change the model by editing `wrangler.jsonc` and redeploying.
+
+If the worker still has this stored as a secret from an earlier deploy, delete it first — a leftover secret and a var of the same name collide:
+
+```sh
+npx wrangler secret delete OPENCODE_MODEL --name pr-review-agent
+```
 
 **GitHub authentication** — choose one:
 

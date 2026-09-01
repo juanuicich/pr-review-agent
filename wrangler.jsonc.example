@@ -53,9 +53,11 @@
   // - GH_TOKEN (GitHub PAT)
   // - LINEAR_API_KEY
   // - LLM_API_KEY (API key for the selected model provider)
-  // - OPENCODE_MODEL (provider/model format, e.g. anthropic/claude-sonnet-4-6)
   // - REVIEW_WORKER_URL (deployed worker URL, e.g. https://pr-review-agent.<account>.workers.dev)
   "vars": {
+    // Model used for reviews, in opencode "provider/model" format. Not a
+    // secret. The matching provider API key stays in the LLM_API_KEY secret.
+    "OPENCODE_MODEL": "deepseek/deepseek-v4-flash",
     // The sandbox DO reads this. On the default "http" transport, restoring a
     // backup base64-encodes the whole archive in DO memory (~148MB for a
     // 106MiB snapshot, against a 128MB limit) and the container receives
