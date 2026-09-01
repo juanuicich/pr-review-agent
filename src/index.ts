@@ -570,9 +570,17 @@ async function handleReview(request: Request, env: Env, ctx: ExecutionContext): 
     backupMs = Date.now() - backupStarted;
   }
 
+  // The base prompt is immutable; a repo's .review-agent/prompt.md is
+  // appended, not substituted. It is fetched from the default branch on
+  // purpose: a PR must not be able to inject instructions into its own
+  // review by editing prompt.md on the PR branch.
+  const reviewAgentMd = promptMd
+    ? `${DEFAULT_PROMPT}\n---\n\n${promptMd}\n`
+    : DEFAULT_PROMPT;
+
   await Promise.all([
     sandbox.writeFile("/workspace/.opencode.json", buildOpenCodeConfig(env.OPENCODE_MODEL)),
-    sandbox.writeFile("/workspace/REVIEW_AGENT.md", promptMd ?? DEFAULT_PROMPT),
+    sandbox.writeFile("/workspace/REVIEW_AGENT.md", reviewAgentMd),
     sandbox.writeFile("/workspace/entrypoint.sh", ENTRYPOINT_SCRIPT),
   ]);
   await sandbox.exec("chmod +x /workspace/entrypoint.sh");

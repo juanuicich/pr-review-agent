@@ -229,10 +229,6 @@ The repo is cloned at ${REVIEW_DIR}. \`jq\` is available for JSON parsing;
 Read /workspace/REVIEW_AGENT.md for your instructions.
 PROMPT
 
-if [ -f .review-agent/prompt.md ]; then
-  cp .review-agent/prompt.md /workspace/REVIEW_AGENT.md
-fi
-
 cd "$WORKSPACE"
 OPENCODE_START=$(date +%s)
 log "Running opencode review"
