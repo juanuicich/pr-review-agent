@@ -43,6 +43,12 @@ function buildOpenCodeConfig(model: string): string {
       },
       permission: {
         "*": "allow",
+        // "*" does not cover writes outside --dir; without this rule any
+        // scratch file outside /workspace (e.g. /tmp/review.json) triggers an
+        // external_directory ask, which auto-rejects in non-interactive runs.
+        external_directory: {
+          "/**": "allow",
+        },
       },
     },
     null,

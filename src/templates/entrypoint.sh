@@ -236,8 +236,9 @@ fi
 cd "$WORKSPACE"
 OPENCODE_START=$(date +%s)
 log "Running opencode review"
-OPENCODE_DANGEROUSLY_SKIP_PERMISSIONS=true \
-opencode run "$(cat /workspace/review-prompt.md)" --dir "$WORKSPACE" \
+# --auto: permission prompts auto-reject in non-interactive mode, and the
+# container is destroyed after the review, so nothing here needs approval.
+opencode run --auto "$(cat /workspace/review-prompt.md)" --dir "$WORKSPACE" \
   2>&1 | ts_lines | tee -a "$LOG_FILE" || true
 
 OPENCODE_END=$(date +%s)
